@@ -43,6 +43,8 @@ class Database:
         self.replay = features.replay(self.tables)
         self.states = self.replay.states
         self.win_model, self.base_rates, self.backtest_metrics, self.blend_weights = model.load()
+        from . import hype
+        self.hype_history = hype.load_history()
         self._names = {}
         for fid, st in self.states.items():
             self._names.setdefault(normalize_name(st.name), []).append(fid)
@@ -212,6 +214,11 @@ class Database:
                 return wc
         raise LookupError_(f"Unknown weight class '{text}'. Options: {', '.join(sorted(known))}")
 
+    def division_of(self, fid: str) -> str | None:
+        """The weight class of a fighter's most recent UFC fight."""
+        log = self.fight_log(fid)
+        return log.iloc[0]["weight_class"] if len(log) else None
+
     def _likely_weight_class(self, a_id: str, b_id: str) -> str:
         for fid in (a_id, b_id):
             log = self.fight_log(fid)
@@ -291,13 +298,14 @@ class Database:
     def leaders(self, division: str | None = None, active_days: int = 730, limit: int = 25,
                 date: pd.Timestamp | None = None) -> pd.DataFrame:
         date = pd.Timestamp(date) if date is not None else pd.Timestamp.today().normalize()
+        division = self._weight_class(division) if division else None
         rows = []
         for fid, st in self.states.items():
             if st.last_date is None or (date - st.last_date).days > active_days or st.fights < 2:
                 continue
             log = self.fight_log(fid)
             wc = log.iloc[0]["weight_class"]
-            if division and normalize_name(division) not in normalize_name(wc):
+            if division and wc != division:
                 continue
             dob = self.info(fid).get("dob")
             rows.append({"fighter": self.label(fid), "division": wc, "elo": round(st.elo),

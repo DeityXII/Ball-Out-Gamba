@@ -384,6 +384,8 @@ def replay(tables: dict[str, pd.DataFrame]) -> Replay:
             "b_ko_l": sb.ko_losses, "b_sub_l": sb.sub_losses, "b_dec_l": sb.dec_losses,
         }
         rec.update({f"d_{k}": v for k, v in diff_features(fa, fb).items()})
+        rec.update({f"a_{k}": fa[k] for k in FEATURES})  # each side's own numbers (used by hype.py)
+        rec.update({f"b_{k}": fb[k] for k in FEATURES})
         out.append(rec)
 
         elo_a, elo_b = sa.elo, sb.elo

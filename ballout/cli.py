@@ -10,7 +10,7 @@ import pandas as pd
 
 import requests
 
-from . import bfo, config, data, features, footage, market, model, news, odds, settings, upcoming
+from . import bfo, config, data, features, footage, hype, market, model, news, odds, settings, upcoming
 from .analysis import Database, LookupError_
 
 pd.set_option("display.width", 200)
@@ -68,17 +68,23 @@ def cmd_update(args):
     if weights:
         print(f"  model/market blend weights: model {weights[0]:.2f}, market {weights[1]:.2f}")
     model.save(model.train_win_model(rep.rows), model.method_base_rates(tables["fights"]), metrics, weights)
+    if len(hist_odds):
+        hype.save_history(hype.build_history(rep.rows, hist_odds))
+        print("  hype meter history rebuilt")
     rep.rows.to_csv(config.PROCESSED_DIR / "prefight_features.csv", index=False)
     print(f"Done. Tables are in {config.PROCESSED_DIR}")
 
 
 def cmd_search(args, db: Database):
-    hits = db.search(args.query)
+    hits = db.search(args.query, limit=200 if args.division else 20)
+    if args.division:
+        div = db._weight_class(args.division)
+        hits = [f for f in hits if db.division_of(f) == div][:20]
     if not hits:
         print("No matches.")
         return
     rows = [{"id": f, "fighter": db.label(f), "ufc record": db.states[f].record,
-             "last fight": db.states[f].last_date.date()} for f in hits]
+             "division": db.division_of(f), "last fight": db.states[f].last_date.date()} for f in hits]
     print(pd.DataFrame(rows).to_string(index=False))
 
 
@@ -98,6 +104,10 @@ def cmd_fighter(args, db: Database):
     print(f"Wins:   KO/TKO {st.ko_wins}  SUB {st.sub_wins}  DEC {st.dec_wins}")
     print(f"Losses: KO/TKO {st.ko_losses}  SUB {st.sub_losses}  DEC {st.dec_losses}")
     print(f"Fights that went the distance: {_pct(db.distance_rate(fid))}")
+    h = hype.current(db, fid, db.hype_history)
+    if h["available"]:
+        print(f"Hype meter: {h['meter']}/100 - {h['label']} ({h['basis']}, {h['date']:%Y-%m-%d}: odds "
+              f"{_pct(h['market %'])} vs stats {_pct(h['stats %'])})")
 
     cs = db.career_stats(fid)
     _header("Career stats (UFC)")
@@ -322,8 +332,11 @@ def cmd_upcoming(args, db: Database):
     print(f"Best prices from: {', '.join(books)}  (change with `books`)")
     analyses = upcoming.analyse(db, args.event, args.unscheduled, args.news, args.news_days,
                                 args.bankroll, args.kelly, MAX_STAKE, books=books)
+    division = db._weight_class(args.division) if args.division else None
+    analyses = upcoming.filter_division(analyses, division)
     if not analyses:
-        print("No upcoming UFC events found" + (f" matching '{args.event}'." if args.event else "."))
+        print("No upcoming UFC fights found" + (f" matching '{args.event}'" if args.event else "")
+              + (f" at {division}" if division else "") + ".")
         return
     for ea in analyses:
         when = "date TBA" if pd.isna(ea.date) else f"{ea.date:%a %b %d %Y}"
@@ -342,6 +355,9 @@ def cmd_upcoming(args, db: Database):
             "EV": [("-" if pd.isna(e1) else f"{e1:+.0%}") + " / " + ("-" if pd.isna(e2) else f"{e2:+.0%}")
                    for e1, e2 in zip(f["ev1"], f["ev2"])],
             "moved": [("-" if pd.isna(m) else f"{m * 100:+.1f}") for m in f["move"]],
+            "hype": [("-" if pd.isna(h1) else f"{h1:.0f}") + " / " + ("-" if pd.isna(h2) else f"{h2:.0f}")
+                     for h1, h2 in zip(f.get("hype1", pd.Series(np.nan, f.index)), f.get("hype2", pd.Series(np.nan, f.index)))],
+            "division": f["weight_class"].fillna("-"),
         })
         print(show.to_string(index=False))
         if f["move"].notna().any():
@@ -377,6 +393,18 @@ def cmd_upcoming(args, db: Database):
     if any(pd.isna(ea.date) for ea in analyses):
         print("\nNote: lines on fights without a date are often stale and some of those fights never happen, "
               "so they are left out of the value bets below.")
+    alerts = hype.fraud_checks(db, analyses, db.hype_history)
+    _header("Fraud-check alerts (very hyped favourites on today's odds)")
+    if not alerts:
+        print("None on these cards.")
+    for a in alerts:
+        print(f"  {a['fighter']} vs {a['opponent']} ({a['event']}): hype {a['meter']} - {a['label']}. "
+              f"Odds {_pct(a['market %'])}, stats {_pct(a['stats %'])}, ours {_pct(a['our %'])}.")
+        for w in a["why"]:
+            print(f"      - {w}")
+    if alerts:
+        print("Historically, fighters this hyped won 3-4 points less often than their odds implied (after the "
+              "usual favourite bias) - most still win. See `hype --backtest`.")
     vb = upcoming.value_bets(analyses, args.min_ev)
     _header(f"Value bets (expected return >= {args.min_ev:.0%} at the best available price)")
     if vb.empty:
@@ -414,6 +442,90 @@ def cmd_footage(args, db: Database):
         _header(f"{r.date:%Y-%m-%d}  {r.result} vs {r.opponent} ({r.method}, R{_num(r.round, 0)})  {r.event}")
         for label, url in footage.links(name, r.opponent, r.event).items():
             print(f"  {label:15s} {url}")
+
+
+def cmd_hype(args, db: Database):
+    hist = db.hype_history
+    if hist.empty:
+        sys.exit("No hype history yet - run `update` first.")
+    division = db._weight_class(args.division) if args.division else None
+    live = {}
+    analyses = []
+    if args.live:
+        print("Fetching live lines from BestFightOdds...")
+        analyses = upcoming.filter_division(upcoming.analyse(db, verbose=False), division)
+        for ea in analyses:
+            for f in ea.fights.to_dict("records"):
+                if pd.isna(f.get("p1_model")) or pd.isna(ea.date):
+                    continue
+                for side, other, pm, pmod in (("1", "2", f["p1_market"], f["p1_model"]),
+                                              ("2", "1", 1 - f["p1_market"], 1 - f["p1_model"])):
+                    fid = db.find_strict(f[f"fighter{side}"])
+                    if fid:
+                        live[fid] = {"p_market": pm, "p_model": pmod, "opponent": f[f"fighter{other}"], "event": ea.name}
+
+    if args.backtest:
+        bt = hype.backtest_table(hist)
+        _header(f"Does hype get exposed? Every priced UFC fight since {bt.attrs['since']:%Y}")
+        show = bt.copy()
+        for c in ("favourites", "odds said", "corrected odds", "actually won"):
+            show[c] = show[c].map(lambda x: _pct(x, 1))
+        show["vs corrected"] = show["vs corrected"].map(lambda x: f"{x * 100:+.1f} pts")
+        show["± (1 s.e.)"] = show["± (1 s.e.)"].map(lambda x: f"{x * 100:.1f}")
+        print(show.to_string(index=False))
+        print("'corrected odds' removes the favourite bias (favourites as a group beat their odds). Very hyped "
+              "fighters fall short of it: that gap is the fraud-check effect. Most still win.")
+        return
+
+    if args.name:
+        fid = db.find(args.name)
+        h = hype.current(db, fid, hist, live.get(fid))
+        _header(f"Hype meter: {db.label(fid)}")
+        if not h["available"]:
+            print(f"Not available: {h['reason']}.")
+            return
+        bar = "#" * (h["meter"] // 5) + "." * (20 - h["meter"] // 5)
+        print(f"[{bar}] {h['meter']}/100  {h['label']}")
+        print(f"Based on {h['basis']}: odds {_pct(h['market %'], 1)} vs stats model {_pct(h['stats %'], 1)} "
+              f"({h['gap pts']:+.0f} pts). UFC record {h['record']}.")
+        for w in hype.reasons(h):
+            print(f"  - {w}")
+        if args.buzz:
+            n = len(news.fighter_news(db.states[fid].name, days=30, limit=100))
+            print(f"Media buzz: {n} headlines in the last 30 days (shown for context; not part of the meter)")
+        return
+
+    u = hype.up_and_comers(db, hist, division=division, live=live)
+    title = "Up-and-comers" + (f" - {division}" if division else "") + " (2-7 UFC fights, 31 or younger, winning, active)"
+    _header(title)
+    if u.empty:
+        print("None found.")
+        return
+    u = u.head(args.limit)
+    if args.buzz:
+        print(f"Checking media buzz for {len(u)} fighters...")
+        session = requests.Session()
+        u["buzz"] = [len(news.fighter_news(n.split(" (")[0], days=30, limit=100, session=session)) for n in u["fighter"]]
+    show = pd.DataFrame({
+        "fighter": u["fighter"], "division": u["division"], "record": u["record"],
+        "age": u["age"].map(lambda x: _num(x, 0)),
+        "hype": [f"{m:3d} {lab}" for m, lab in zip(u["meter"], u["label"])],
+        "odds vs stats": [f"{_pct(a)} vs {_pct(b)}" for a, b in zip(u["market %"], u["stats %"])],
+        "based on": u["basis"],
+    })
+    if args.buzz:
+        show["buzz"] = u["buzz"]
+    print(show.to_string(index=False))
+    print("\nHype meter: how far the betting odds rate a fighter above what their stats support (more weight when "
+          "they're unbeaten). 60+ = very hyped, 80+ = fraud-check zone. Use --live to score booked fighters on "
+          "their next fight's odds, `hype \"Name\"` for one fighter, `--backtest` for the evidence.")
+    if args.live:
+        alerts = hype.fraud_checks(db, analyses, hist)
+        _header("Fraud-check alerts on upcoming cards")
+        for a in alerts:
+            print(f"  {a['fighter']} ({a['meter']}, {a['label']}) vs {a['opponent']} - {a['event']}")
+        if not alerts:
+            print("None right now.")
 
 
 def cmd_books(args):
@@ -536,6 +648,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("search", help="find fighters by (partial) name")
     s.add_argument("query")
+    s.add_argument("--division", help="only fighters whose latest fight was in this weight class")
 
     s = sub.add_parser("fighter", help="fighter profile, career stats and fight log")
     s.add_argument("name")
@@ -567,6 +680,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="minimum expected return to list as a value bet (default 0.05)")
 
     s.add_argument("--books", help="just for this run, e.g. \"FanDuel,DraftKings\" (default: your saved choice)")
+    s.add_argument("--division", help="only fights in this weight class, e.g. Lightweight")
+
+    s = sub.add_parser("hype", help="hype meter: who the odds rate above their stats; up-and-comers; fraud checks")
+    s.add_argument("name", nargs="?", help="one fighter (default: list of up-and-comers)")
+    s.add_argument("--division", help="e.g. Lightweight, \"Women's Strawweight\"")
+    s.add_argument("--live", action="store_true", help="score booked fighters on their next fight's live odds")
+    s.add_argument("--buzz", action="store_true", help="also count recent headlines (slower)")
+    s.add_argument("--backtest", action="store_true", help="show how hyped fighters did against their odds")
+    s.add_argument("--limit", type=int, default=25)
 
     s = sub.add_parser("books", help="choose which sportsbooks' odds to use (saved; shared with the apps)")
     s.add_argument("names", nargs="*", help="e.g. FanDuel DraftKings BetMGM")
@@ -645,7 +767,8 @@ def run(argv=None):
         db = _database()
         handler = {"search": cmd_search, "fighter": cmd_fighter, "matchup": cmd_matchup,
                    "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event,
-                   "upcoming": cmd_upcoming, "news": cmd_news, "footage": cmd_footage}[args.command]
+                   "upcoming": cmd_upcoming, "news": cmd_news, "footage": cmd_footage,
+                   "hype": cmd_hype}[args.command]
         handler(args, db)
     except (LookupError_, FileNotFoundError, ValueError) as e:
         sys.exit(str(e))

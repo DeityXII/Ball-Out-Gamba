@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 import pandas as pd
 
-from . import config, footage, news, odds, settings, upcoming
+from . import config, footage, hype, news, odds, settings, upcoming
 from .analysis import Database, LookupError_
 from .webpage import INDEX_HTML
 
@@ -207,12 +207,29 @@ class App:
                 "prediction_markets": settings.PREDICTION_MARKETS}
 
     # ---- endpoints -----------------------------------------------------
-    def search(self, q: str = "") -> list:
-        if len(q.strip()) < 2:
-            return []
+    DIVISION_ORDER = ["Heavyweight", "Light Heavyweight", "Middleweight", "Welterweight", "Lightweight",
+                      "Featherweight", "Bantamweight", "Flyweight", "Women's Featherweight",
+                      "Women's Bantamweight", "Women's Flyweight", "Women's Strawweight"]
+
+    def divisions(self) -> list:
+        return self.DIVISION_ORDER
+
+    def _division(self, division: str) -> str | None:
+        return self.db._weight_class(division) if division else None
+
+    def search(self, q: str = "", division: str = "") -> list:
         db = self.db
+        div = self._division(division)
+        if len(q.strip()) < 2 and not div:
+            return []
+        if len(q.strip()) >= 2:
+            ids = db.search(q, limit=60 if div else 12)
+        else:  # division only: its most recently active fighters
+            ids = sorted(db.states, key=lambda f: db.states[f].last_date or pd.Timestamp(0), reverse=True)[:400]
+        if div:
+            ids = [f for f in ids if db.division_of(f) == div][:12]
         return [{"id": f, "name": db.label(f), "record": db.states[f].record,
-                 "last": db.states[f].last_date} for f in db.search(q, limit=12)]
+                 "last": db.states[f].last_date, "division": db.division_of(f)} for f in ids]
 
     def _side(self, fid: str, date: pd.Timestamp) -> dict:
         db, st = self.db, self.db.states[fid]
@@ -245,6 +262,9 @@ class App:
             "watch": footage.links(st_name, r.opponent, r.event),
         } for r in log.itertuples()]
         out["watch"] = footage.fighter_links(st_name)
+        h = hype.current(db, fid, db.hype_history)
+        out["hype"] = {**h, "why": hype.reasons(h)}
+        out["division"] = db.division_of(fid)
         return out
 
     def matchup(self, a: str = "", b: str = "", odds_a: str = "", odds_b: str = "", live: str = "",
@@ -279,24 +299,41 @@ class App:
             out["priced"] = priced
             out["priced_used"] = priced.attrs.get("used")
             out["vig"] = priced.attrs.get("vig")
+            if "market %" in priced:
+                for key, fid, opp, row in (("a", a_id, pred.b.name, 0), ("b", b_id, pred.a.name, 1)):
+                    h = hype.current(db, fid, db.hype_history, {
+                        "p_market": float(priced["market %"].iloc[row]), "p_model": float(priced["model %"].iloc[row]),
+                        "opponent": opp, "event": live_info["event"] if live_info else None})
+                    out[key]["hype"] = {**h, "why": hype.reasons(h)}
+        for key, fid in (("a", a_id), ("b", b_id)):
+            if "hype" not in out[key]:
+                h = hype.current(db, fid, db.hype_history)
+                out[key]["hype"] = {**h, "why": hype.reasons(h)}
         return out
+
+    def _analyses(self, with_news: bool = False, with_unsched: bool = False):
+        """Live analysis of upcoming cards, shared by the Cards and Hype tabs."""
+        books = settings.books()
+        return self._cached(("analyses", with_news, with_unsched, tuple(books)), 600 if with_news else 300,
+                            lambda: (pd.Timestamp.now(), books, upcoming.analyse(
+                                self.db, None, with_unsched, with_news, verbose=False, books=books)))
 
     def upcoming(self, news: str = "", unscheduled: str = "", min_ev: str = "0.05") -> dict:
         with_news, with_unsched = news == "1", unscheduled == "1"
-        books = settings.books()
+        fetched, books, analyses = self._analyses(with_news, with_unsched)
 
         def run():
-            analyses = upcoming.analyse(self.db, None, with_unsched, with_news, verbose=False, books=books)
             return {
-                "fetched_at": pd.Timestamp.now(),
+                "fetched_at": fetched,
                 "events": [{
                     "name": ea.name, "date": ea.date, "url": ea.url, "fights": ea.fights,
                     "news": {k: [_headline(h) for h in v] for k, v in ea.news.items()},
                 } for ea in analyses],
                 "value_bets": upcoming.value_bets(analyses, 0.0),
+                "fraud_checks": hype.fraud_checks(self.db, analyses, self.db.hype_history),
                 "chosen_books": books,
             }
-        data = self._cached(("upcoming", with_news, with_unsched, tuple(books)), 600 if with_news else 300, run)
+        data = self._cached(("upcoming", with_news, with_unsched, tuple(books), fetched), 600, run)
         data = dict(data)
         vb = data["value_bets"]
         data["value_bets"] = vb[vb["EV"] >= float(min_ev)] if len(vb) else vb
@@ -313,6 +350,44 @@ class App:
             return {"fighter": name, "headlines": [_headline(h) for h in hs]}
         hs = self._cached(("news",), 900, lambda: news.general_news(30))
         return {"headlines": [_headline(h) for h in hs]}
+
+    def hype(self, division: str = "", live: str = "", name: str = "", limit: str = "40") -> dict:
+        db = self.db
+        hist = db.hype_history
+        if hist.empty:
+            raise NoData("The hype meter needs the betting history - run Update data.")
+        div = self._division(division)
+        live_map, alerts = {}, []
+        if live == "1":
+            _, _, analyses = self._analyses()
+            analyses = upcoming.filter_division(analyses, div)
+            alerts = hype.fraud_checks(db, analyses, hist)
+            for ea in analyses:
+                if pd.isna(ea.date):
+                    continue
+                for f in ea.fights.to_dict("records"):
+                    if pd.isna(f.get("p1_model")):
+                        continue
+                    for side, other, pm, pmod in (("1", "2", f["p1_market"], f["p1_model"]),
+                                                  ("2", "1", 1 - f["p1_market"], 1 - f["p1_model"])):
+                        fid = db.find_strict(f[f"fighter{side}"])
+                        if fid:
+                            live_map[fid] = {"p_market": pm, "p_model": pmod,
+                                             "opponent": f[f"fighter{other}"], "event": ea.name}
+        if name:
+            fid = db.find(name)
+            h = hype.current(db, fid, hist, live_map.get(fid))
+            return {"fighter": {**h, "why": hype.reasons(h)}}
+        u = hype.up_and_comers(db, hist, division=div, live=live_map)
+        bt = hype.backtest_table(hist)
+        return {"division": div, "list": u.head(int(limit)), "alerts": alerts,
+                "backtest": bt, "since": bt.attrs.get("since")}
+
+    def buzz(self, name: str = "") -> dict:
+        fid = self.db.find(name)
+        real = self.db.states[fid].name
+        hs = self._cached(("buzz", real), 1800, lambda: news.fighter_news(real, days=30, limit=100))
+        return {"fighter": real, "headlines_30d": len(hs)}
 
     def leaders(self, division: str = "", limit: str = "25") -> list:
         return self.db.leaders(division or None, limit=int(limit))
@@ -351,7 +426,8 @@ def make_handler(app: App):
     routes = {"search": app.search, "fighter": app.fighter, "matchup": app.matchup,
               "upcoming": app.upcoming, "news": app.news, "leaders": app.leaders,
               "status": app.status, "update": app.update, "update_status": app.update_status,
-              "phone": app.phone, "settings": app.prefs}
+              "phone": app.phone, "settings": app.prefs, "hype": app.hype, "buzz": app.buzz,
+              "divisions": app.divisions}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ballout"
@@ -362,7 +438,10 @@ def make_handler(app: App):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the browser navigated away mid-request
 
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)

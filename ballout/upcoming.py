@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from . import bfo, config, market, news, odds, settings
+from . import bfo, config, hype, market, news, odds, settings
 from .analysis import Database
 
 SNAPSHOTS = "odds_snapshots.csv"
@@ -87,11 +87,19 @@ def analyse(db: Database, event_filter: str | None = None, include_unscheduled: 
                    "dec1_median": c.dec1_median, "dec2_median": c.dec2_median, "notes": []}
             if not mine["lines"]:
                 rec["notes"].append("None of your chosen sportsbooks has posted this fight yet.")
+            known = [i for i in (a_id, b_id) if i]
+            rec["weight_class"] = db.division_of(known[0]) if known else None
             p1_model = np.nan
             if a_id and b_id and a_id != b_id:
                 pred = db.predict(a_id, b_id, date)
                 p1_model = pred.p_a
+                rec["weight_class"] = pred.methods["weight_class"]
                 rec["notes"] += pred.notes
+                for side, fid, opp, pm, pmod in (("1", a_id, c.fighter2, c.p1_market, p1_model),
+                                                ("2", b_id, c.fighter1, 1 - c.p1_market, 1 - p1_model)):
+                    h = hype.current(db, fid, db.hype_history, {"p_market": pm, "p_model": pmod,
+                                                                "opponent": opp, "event": ev["name"]})
+                    rec[f"hype{side}"], rec[f"hype{side}_label"] = h["meter"], h["label"]
             else:
                 missing = [n for n, i in ((c.fighter1, a_id), (c.fighter2, b_id)) if not i]
                 rec["notes"].append(f"No UFC history for {', '.join(missing)}: market price only.")
@@ -137,6 +145,18 @@ def analyse(db: Database, event_filter: str | None = None, include_unscheduled: 
     return [ea for ea in out if len(ea.fights) or all(e.fights.empty for e in named[ea.name])]
 
 
+def filter_division(analyses: list[EventAnalysis], division: str | None) -> list[EventAnalysis]:
+    """Keep only fights in one weight class (division = canonical name, e.g. "Women's Flyweight")."""
+    if not division:
+        return analyses
+    out = []
+    for ea in analyses:
+        f = ea.fights[ea.fights["weight_class"] == division] if len(ea.fights) else ea.fights
+        if len(f):
+            out.append(EventAnalysis(ea.name, ea.date, ea.url, f.reset_index(drop=True), ea.news))
+    return out
+
+
 STALE_GAP = 0.05  # best price implies 5+ points less than the typical book: likely stale
 
 
@@ -152,7 +172,8 @@ def value_bets(analyses: list[EventAnalysis], min_ev: float = 0.05) -> pd.DataFr
                 if r[f"ev{side}"] >= min_ev:
                     p = r["p1_est"] if side == "1" else 1 - r["p1_est"]
                     rows.append({
-                        "event": ea.name, "bet": r[f"fighter{side}"], "vs": r[f"fighter{other}"],
+                        "event": ea.name, "division": r.get("weight_class"),
+                        "bet": r[f"fighter{side}"], "vs": r[f"fighter{other}"],
                         "price": odds.decimal_to_american(r[f"dec{side}_best"]), "book": r[f"book{side}_best"],
                         "our %": p, "market %": r["p1_market"] if side == "1" else 1 - r["p1_market"],
                         "EV": r[f"ev{side}"], "kelly %": r[f"kelly{side}"], "stake": r[f"stake{side}"],

@@ -123,6 +123,7 @@ python -m ballout web                                      # phone app (see "On 
 python -m ballout upcoming                                 # every upcoming UFC card, live odds
 python -m ballout upcoming --event "UFC 334" --news --bankroll 500
 python -m ballout books FanDuel DraftKings                  # only use the books you bet with
+python -m ballout hype --live                              # hype meter + fraud-check alerts
 python -m ballout news "Amanda Nunes"                      # recent headlines + red flags
 python -m ballout news                                     # latest UFC headlines
 python -m ballout fighter "Islam Makhachev"                # profile + last 10 fights
@@ -140,6 +141,53 @@ python -m ballout backtest                                 # how accurate is the
 Names are forgiving: case, accents and small typos are fine (`makhachv`, `conor mcgregr`).
 Where two fighters share a name (e.g. the two Bruno Silvas) you'll be shown both with
 their ids; pass the id instead of the name.
+
+### Hype meter and fraud checks
+
+```bash
+python -m ballout hype                                     # up-and-comers, most hyped first
+python -m ballout hype --live --division welterweight      # score booked fighters on next fight's odds
+python -m ballout hype "Payton Talbott" --buzz             # one fighter, with media buzz
+python -m ballout hype --backtest                          # the evidence
+```
+
+The **hype meter** (0–100) measures how far the betting odds rate a fighter above what their
+fight stats support. The gap counts more when the fighter is unbeaten. 60+ is *very hyped*;
+80+ is the *fraud-check zone*. In the app it's the **Hype** tab, and it also appears on every
+fighter profile and matchup, as badges on upcoming cards, and in a **fraud-check alert** list
+of very hyped favourites on the upcoming cards (shown in the app, `upcoming` and `hype --live`).
+
+It's built from what held up in a backtest of every UFC fight with closing odds since 2014
+(9,664 fighter-fights). Because favourites as a group beat their odds, results are compared
+with bias-corrected odds:
+
+| hype band | fights | won vs corrected odds |
+|---|---|---|
+| Underrated | 2,173 | +1.7 ± 0.9 pts |
+| Fairly rated | 4,081 | −0.1 ± 0.7 |
+| Hyped | 2,134 | +0.5 ± 1.0 |
+| Very hyped | 947 | **−3.3 ± 1.4** |
+| Fraud-check zone | 329 | **−3.9 ± 2.1** |
+
+So very hyped fighters win 3–4 points less often than their odds imply. That's real, but
+most of them still win: it's a reason to be wary of laying a big price, not to bet against
+everyone with momentum. Signals that were **tested and dropped** because they didn't hold
+up include padded records against weak opposition, win streaks, inexperience and past hype.
+Fighters who were hyped in earlier fights actually did slightly *better*, so lasting hype
+tends to be earned. Young fighters and fighters stepping up in competition tended to *beat*
+their odds. Media buzz (headline count) is shown for context only, because there's no
+history to test it against.
+
+For booked fights the meter uses today's odds, which is the use that was tested. For
+fighters without a booked fight it describes their last priced fight.
+
+### Weight-class filters
+
+Every list can be narrowed to one division: upcoming cards and value bets (`upcoming
+--division`), fighter search (`search --division`), the leaderboard (`leaders --division`)
+and the hype list (`hype --division`). In the app, use the division menu on the Cards,
+Fighters and Hype tabs. Divisions match exactly, so "Flyweight" doesn't include Women's
+Flyweight.
 
 ### Fight footage
 

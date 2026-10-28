@@ -64,7 +64,7 @@ label.check input { width: auto; }
 .btn.ghost { background: var(--surface2); color: var(--text); }
 .btn.small { padding: 6px 10px; font-size: 13px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+.pill { display: inline-block; white-space: nowrap; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
   background: var(--surface2); color: var(--muted); }
 .pill.good { background: var(--good-bg); color: var(--good); } .pill.bad { background: var(--bad-bg); color: var(--bad); }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
@@ -104,6 +104,11 @@ details.lines { margin-top: 4px; } details.lines summary { cursor: pointer; list
 details.lines summary::-webkit-details-marker { display: none; }
 details.lines summary::before { content: "▸ "; } details.lines[open] summary::before { content: "▾ "; }
 details.lines table { margin-top: 4px; max-width: 420px; }
+.meter { position: relative; height: 10px; border-radius: 999px; background: var(--surface2); overflow: hidden; margin: 6px 0 4px; }
+.meter i { position: absolute; inset: 0 auto 0 0; border-radius: 999px;
+  background: linear-gradient(90deg, #2f9e66 0%, #c9a227 50%, #d9822b 70%, #c0392b 100%); background-size: var(--full, 100%) 100%; }
+.hype-pill { font-size: 11px; padding: 1px 7px; margin-left: 6px; vertical-align: 1px; }
+select.div { width: auto; padding: 6px 10px; font-size: 14px; }
 .url { font: 600 17px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: all; word-break: break-all; }
 @media (min-width: 900px) {
   header { padding-left: 24px; padding-right: 24px; }
@@ -132,6 +137,7 @@ details.lines table { margin-top: 4px; max-width: 420px; }
       <div class="row" style="flex-wrap:wrap;gap:14px;margin-top:6px">
         <label class="check"><input type="checkbox" id="opt-news"> Check fighter news</label>
         <label class="check"><input type="checkbox" id="opt-unsched"> Include undated fights</label>
+        <select id="c-div" class="div"><option value="">All divisions</option></select>
       </div>
       <p class="muted tiny" style="margin:8px 0 0">Live lines via BestFightOdds. Best prices come from the sportsbooks you
         picked in Settings. "Ours" blends the stats model with the market. Value = 5%+ expected return at your best price.</p>
@@ -159,21 +165,31 @@ details.lines table { margin-top: 4px; max-width: 420px; }
   <section id="tab-fighters">
     <div class="card">
       <h2>Fighters</h2>
-      <input id="f-q" placeholder="Search any UFC fighter" autocomplete="off" style="margin-top:8px">
+      <div class="row" style="margin-top:8px"><input id="f-q" class="grow" placeholder="Search any UFC fighter" autocomplete="off">
+        <select id="f-div" class="div"><option value="">All divisions</option></select></div>
       <div id="f-results" class="list"></div>
     </div>
     <div id="f-out"></div>
     <div class="card">
       <div class="between"><h2>Top active fighters</h2>
-        <select id="l-div" style="width:auto">
-          <option value="">All divisions</option><option>Heavyweight</option><option>Light Heavyweight</option>
-          <option>Middleweight</option><option>Welterweight</option><option>Lightweight</option>
-          <option>Featherweight</option><option>Bantamweight</option><option>Flyweight</option>
-          <option value="women's strawweight">Women's Strawweight</option><option value="women's flyweight">Women's Flyweight</option>
-          <option value="women's bantamweight">Women's Bantamweight</option>
-        </select></div>
+        <select id="l-div" class="div"><option value="">All divisions</option></select></div>
       <div id="l-out" class="list"></div>
     </div>
+  </section>
+
+  <section id="tab-hype">
+    <div class="card">
+      <h2>Hype meter</h2>
+      <p class="muted small" style="margin:2px 0 8px">How far the betting odds rate a fighter above what their fight stats
+        support, weighted up for unbeaten fighters. 60+ is very hyped, 80+ is the fraud-check zone. Historically those fighters
+        won 3-4 points less often than their odds implied (after the usual favourite bias). Most still win.</p>
+      <div class="row" style="flex-wrap:wrap;gap:14px">
+        <label class="check"><input type="checkbox" id="h-live" checked> Score booked fighters on their next fight's odds</label>
+        <select id="h-div" class="div"><option value="">All divisions</option></select>
+      </div>
+      <details style="margin-top:10px"><summary class="small" style="cursor:pointer">The evidence</summary><div id="h-bt" class="scroll"></div></details>
+    </div>
+    <div id="h-out"></div>
   </section>
 
   <section id="tab-settings">
@@ -236,6 +252,7 @@ details.lines table { margin-top: 4px; max-width: 420px; }
   <button data-tab="cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/></svg>Cards</button>
   <button data-tab="matchup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7" cy="12" r="4"/><circle cx="17" cy="12" r="4"/></svg>Matchup</button>
   <button data-tab="fighters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Fighters</button>
+  <button data-tab="hype"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22c4 0 7-2.8 7-7 0-4.5-4-7.5-5-12-2.5 2-4 4.5-4 7-1-.7-1.7-1.8-2-3-2 2-3 4.4-3 7 0 4.4 3 8 7 8z"/></svg>Hype</button>
   <button data-tab="news"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h10M7 17h6"/></svg>News</button>
   <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
 </nav>
@@ -266,6 +283,16 @@ const bankroll = () => parseFloat($('#bankroll').value) || 0;
 const stake = k => bankroll() && k ? ` · stake $${(bankroll() * k).toFixed(2)}` : '';
 const bar = p => `<div class="bar"><i class="a" style="width:${(p * 100).toFixed(1)}%"></i><i class="b" style="width:${(100 - p * 100).toFixed(1)}%"></i></div>`;
 const flagPills = hs => [...new Set((hs || []).flatMap(h => h.flags))].map(f => `<span class="pill warn">${esc(f)}</span>`).join(' ');
+const hypeClass = m => m >= 80 ? 'bad' : m >= 60 ? 'warn' : m < 20 ? 'good' : '';
+const hypePill = (m, lab) => m == null ? '' : `<span class="pill hype-pill ${hypeClass(m)}" title="${esc(lab)}">hype ${Math.round(m)}</span>`;
+const meterBar = m => `<div class="meter"><i style="width:${m}%;--full:${m ? 10000 / m : 100}%"></i></div>`;
+let DIVS = [];
+async function loadDivisions() {
+  try { DIVS = await api('divisions'); } catch (e) { return; }
+  for (const id of ['#c-div', '#f-div', '#l-div', '#h-div']) {
+    $(id).innerHTML = '<option value="">All divisions</option>' + DIVS.map(d => `<option>${esc(d)}</option>`).join('');
+  }
+}
 const watchLinks = w => `<div class="links">${Object.entries(w).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)} ↗</a>`).join('')}</div>`;
 
 // ---- tabs ----------------------------------------------------------------
@@ -275,6 +302,7 @@ function show(tab) {
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   if (tab !== 'welcome') store.set('tab', tab);
   if (tab === 'settings') loadSettings();
+  if (tab === 'hype' && !$('#h-out').innerHTML) loadHype();
   window.scrollTo(0, 0);
   if (tab === 'cards' && !$('#cards-out').dataset.loaded) loadCards();
   if (tab === 'news' && !$('#n-out').innerHTML) loadNews();
@@ -305,9 +333,28 @@ async function loadCards() {
   const withNews = $('#opt-news').checked;
   loading(out, withNews ? 'Fetching live lines and checking every fighter\'s news… (about a minute)' : 'Fetching live lines… (about 10 seconds)');
   try {
-    const d = await api('upcoming', {news: withNews ? 1 : '', unscheduled: $('#opt-unsched').checked ? 1 : ''});
+    window.cardsData = await api('upcoming', {news: withNews ? 1 : '', unscheduled: $('#opt-unsched').checked ? 1 : ''});
+    renderCards();
+  } catch (e) { fail(out, e); }
+}
+$('#c-div').onchange = () => { if (window.cardsData) renderCards(); };
+function renderCards() {
+  const out = $('#cards-out'), d = window.cardsData, div = $('#c-div').value;
+  const inDiv = x => !div || x === div;
+  {
     let html = '';
-    const vb = d.value_bets || [];
+    const alerts = (d.fraud_checks || []).filter(a => inDiv(a.division));
+    if (alerts.length) {
+      html += `<div class="card"><h2>Fraud-check alerts</h2><p class="muted tiny" style="margin:0 0 4px">Favourites the odds rate well above their stats.</p>`;
+      for (const a of alerts) {
+        html += `<div class="fight"><div class="between"><span class="name">${esc(a.fighter)} <span class="muted small">vs ${esc(a.opponent)}</span></span>
+          <span class="pill ${hypeClass(a.meter)}">hype ${a.meter} · ${esc(a.label)}</span></div>
+          <div class="small">odds ${pct(a['market %'])} · stats ${pct(a['stats %'])} · ours ${pct(a['our %'])} <span class="muted tiny">${esc(a.event)}</span></div>
+          ${a.why.map(w => `<div class="tiny muted">• ${esc(w)}</div>`).join('')}</div>`;
+      }
+      html += `</div>`;
+    }
+    const vb = (d.value_bets || []).filter(v => inDiv(v.division));
     html += `<div class="card"><h2>Value bets</h2>`;
     if (!vb.length) html += `<p class="muted small" style="margin:4px 0 0">None right now. Lines move, so check again closer to fight night.</p>`;
     for (const v of vb) {
@@ -318,10 +365,13 @@ async function loadCards() {
         ${v.check ? `<div class="tiny"><span class="pill warn">${esc(v.check)}</span></div>` : ''}</div>`;
     }
     html += `<p class="muted tiny" style="margin:8px 0 0">Updated ${new Date(d.fetched_at).toLocaleTimeString()} · tap a fight for the full breakdown.</p></div>`;
+    let shown = 0;
     for (const ev of d.events) {
-      if (!ev.fights.length) continue;
+      const fights = ev.fights.filter(f => inDiv(f.weight_class));
+      if (!fights.length) continue;
+      shown += fights.length;
       html += `<div class="card"><div class="between"><h2>${esc(ev.name)}</h2><span class="muted small">${ev.date ? day(ev.date) : 'date TBA'}</span></div>`;
-      for (const f of ev.fights) {
+      for (const f of fights) {
         const p = f.p1_est, n1 = (ev.news || {})[f.fighter1], n2 = (ev.news || {})[f.fighter2];
         const evPill = e => e == null ? '' : `<span class="pill ${e >= 0.05 ? 'good' : e < -0.05 ? 'bad' : ''}">${e >= 0 ? '+' : ''}${pct(e, 0)}</span>`;
         const lines = Object.entries(f.lines || {}).sort((x, y) => x[0].localeCompare(y[0]));
@@ -332,9 +382,10 @@ async function loadCards() {
           ${lines.map(([b, [d1, d2]]) => `<tr><td>${esc(b)}</td>${cell(d1, f.dec1_best)}${cell(d2, f.dec2_best)}</tr>`).join('')}</table></details>` : '';
         const props = f.p_decision != null ? `<div class="tiny muted">Market: decision ${pct(f.p_decision)} · ${esc(f.fighter1.split(' ').pop())} KO ${pct(f.p_1_KO)} SUB ${pct(f.p_1_SUB)} · ${esc(f.fighter2.split(' ').pop())} KO ${pct(f.p_2_KO)} SUB ${pct(f.p_2_SUB)}</div>` : '';
         html += `<div class="fight" data-a="${esc(f.fighter1)}" data-b="${esc(f.fighter2)}" style="cursor:pointer">
-          <div class="between"><span class="name ca ellipsis">${esc(f.fighter1)}</span><span class="small">${pct(p, 1)} · ${am(f.dec1_best)} <span class="muted tiny">${esc(f.book1_best)}</span> ${evPill(f.ev1)}</span></div>
+          <div class="tiny muted">${esc(f.weight_class || '')}</div>
+          <div class="between"><span class="name ca ellipsis">${esc(f.fighter1)}${hypePill(f.hype1, f.hype1_label)}</span><span class="small">${pct(p, 1)} · ${am(f.dec1_best)} <span class="muted tiny">${esc(f.book1_best)}</span> ${evPill(f.ev1)}</span></div>
           ${bar(p)}
-          <div class="between"><span class="name cb ellipsis">${esc(f.fighter2)}</span><span class="small">${pct(1 - p, 1)} · ${am(f.dec2_best)} <span class="muted tiny">${esc(f.book2_best)}</span> ${evPill(f.ev2)}</span></div>
+          <div class="between"><span class="name cb ellipsis">${esc(f.fighter2)}${hypePill(f.hype2, f.hype2_label)}</span><span class="small">${pct(1 - p, 1)} · ${am(f.dec2_best)} <span class="muted tiny">${esc(f.book2_best)}</span> ${evPill(f.ev2)}</span></div>
           <div class="tiny muted">market ${pct(f.p1_market)} (all ${f.books} books) · model ${f.p1_model == null ? 'no data' : pct(f.p1_model)}${f.move != null ? ` · moved ${(f.move * 100 >= 0 ? '+' : '') + (f.move * 100).toFixed(1)} pts` : ''}</div>
           ${props}
           ${linesHtml}
@@ -354,12 +405,13 @@ async function loadCards() {
         html += `</div>`;
       }
     }
+    if (div && !shown) html += `<div class="card muted small">No upcoming ${esc(div)} fights with lines yet.</div>`;
     out.innerHTML = html;
     out.querySelectorAll('.fight[data-a]').forEach(el => el.onclick = ev => {
       if (ev.target.closest('details')) return;  // expanding the lines list, not opening the matchup
       openMatchup(el.dataset.a, el.dataset.b);
     });
-  } catch (e) { fail(out, e); }
+  }
 }
 
 // ---- matchup --------------------------------------------------------------
@@ -414,6 +466,7 @@ async function runMatchup() {
       ['TD def.', pct(A.stats['TD Def']), pct(B.stats['TD Def'])], ['Subs/15', num(A.stats['Sub Avg/15'], 2), num(B.stats['Sub Avg/15'], 2)],
       ['Knockdowns/15', num(A.stats['KD/15'], 2), num(B.stats['KD/15'], 2)], ['Control time', pct(A.stats['Ctrl %']), pct(B.stats['Ctrl %'])],
       ['Went the distance', pct(A.distance_rate), pct(B.distance_rate)],
+      ['Hype meter', A.hype && A.hype.available ? `${A.hype.meter} · ${A.hype.label}` : '–', B.hype && B.hype.available ? `${B.hype.meter} · ${B.hype.label}` : '–'],
     ];
     html += `<div class="card"><h2>Tale of the tape</h2><table><tr><th></th><th class="ca">${esc(A.name)}</th><th class="cb">${esc(B.name)}</th></tr>
       ${rows.map(r => `<tr><td class="muted">${r[0]}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join('')}</table></div>`;
@@ -448,8 +501,8 @@ $('#f-q').oninput = () => {
   fTimer = setTimeout(async () => {
     const box = $('#f-results');
     try {
-      const hits = await api('search', {q: $('#f-q').value});
-      box.innerHTML = hits.map(h => `<a class="item" href="#" data-id="${esc(h.id)}"><span class="name">${esc(h.name)}</span> <span class="muted small">${esc(h.record)} · last ${day(h.last)}</span></a>`).join('');
+      const hits = await api('search', {q: $('#f-q').value, division: $('#f-div').value});
+      box.innerHTML = hits.map(h => `<a class="item" href="#" data-id="${esc(h.id)}"><span class="name">${esc(h.name)}</span> <span class="muted small">${esc(h.record)} · ${esc(h.division || '')} · last ${day(h.last)}</span></a>`).join('');
       box.querySelectorAll('a.item').forEach(a => a.onclick = ev => { ev.preventDefault(); loadFighter(a.dataset.id); });
     } catch (e) { box.innerHTML = ''; }
   }, 200);
@@ -473,6 +526,11 @@ async function loadFighter(id) {
         <div><span>Subs/15</span><span>${num(s['Sub Avg/15'], 2)}</span></div><div><span>Control time</span><span>${pct(s['Ctrl %'])}</span></div>
         <div><span>Knockdowns/15</span><span>${num(s['KD/15'], 2)}</span></div><div><span>Went the distance</span><span>${pct(f.distance_rate)}</span></div>
       </div>
+      ${f.hype && f.hype.available ? `<h3>Hype meter</h3>
+        <div class="between small"><span><b>${f.hype.meter}</b>/100 · ${esc(f.hype.label)}</span><span class="muted tiny">${esc(f.hype.basis)}</span></div>
+        ${meterBar(f.hype.meter)}
+        <div class="tiny muted">odds ${pct(f.hype['market %'])} vs stats ${pct(f.hype['stats %'])}</div>
+        ${f.hype.why.map(w => `<div class="tiny muted">• ${esc(w)}</div>`).join('')}` : ''}
       <h3>Watch</h3>${watchLinks(f.watch)}
       <div style="margin-top:10px"><button class="btn small ghost" id="f-news">Check news</button> <button class="btn small ghost" id="f-vs">Compare…</button></div>
       <div id="f-news-out"></div></div>
@@ -490,6 +548,7 @@ async function loadFighter(id) {
   } catch (e) { fail(out, e); }
 }
 $('#l-div').onchange = () => loadLeaders();
+$('#f-div').onchange = () => $('#f-q').oninput();
 async function loadLeaders() {
   const box = $('#l-out');
   loading(box, 'Loading…');
@@ -497,6 +556,56 @@ async function loadLeaders() {
     const rows = await api('leaders', {division: $('#l-div').value, limit: 15});
     box.innerHTML = rows.map((r, i) => `<div class="item between"><span><span class="muted small">${i + 1}.</span> <span class="name">${esc(r.fighter)}</span> <span class="muted tiny">${esc(r.division)}</span></span><span class="small">${r.elo} · ${esc(r['ufc record'])}</span></div>`).join('');
   } catch (e) { fail(box, e); }
+}
+
+// ---- hype -----------------------------------------------------------------------
+$('#h-live').onchange = () => loadHype();
+$('#h-div').onchange = () => loadHype();
+async function loadHype() {
+  const out = $('#h-out');
+  loading(out, $('#h-live').checked ? 'Scoring fighters (checking live odds)…' : 'Scoring fighters…');
+  try {
+    const d = await api('hype', {division: $('#h-div').value, live: $('#h-live').checked ? 1 : ''});
+    const bt = d.backtest || [];
+    $('#h-bt').innerHTML = `<table class="tight" style="margin-top:6px"><tr><th>Band</th><th>Fights</th><th>Odds said</th><th>Corrected</th><th>Won</th><th>vs corrected</th></tr>
+      ${bt.map(r => `<tr><td>${esc(r.band)}</td><td>${r.fights.toLocaleString()}</td><td>${pct(r['odds said'], 1)}</td><td>${pct(r['corrected odds'], 1)}</td>
+        <td>${pct(r['actually won'], 1)}</td><td>${(r['vs corrected'] * 100 >= 0 ? '+' : '') + (r['vs corrected'] * 100).toFixed(1)} ± ${(r['± (1 s.e.)'] * 100).toFixed(1)}</td></tr>`).join('')}</table>
+      <p class="muted tiny">Every UFC fight with closing odds since ${d.since ? new Date(d.since).getFullYear() : ''}. "Corrected" removes the
+      favourite bias (favourites as a group beat their odds); hyped fighters fall short of it. Tested and dropped: padded records,
+      win streaks, inexperience, past hype. Young fighters and fighters stepping up tended to beat their odds.</p>`;
+    let html = '';
+    if ($('#h-live').checked) {
+      html += `<div class="card"><h2>Fraud-check alerts</h2>` + (d.alerts.length ? d.alerts.map(a =>
+        `<div class="fight"><div class="between"><span class="name">${esc(a.fighter)} <span class="muted small">vs ${esc(a.opponent)}</span></span>
+          <span class="pill ${hypeClass(a.meter)}">hype ${a.meter}</span></div>
+          <div class="small">${esc(a.label)} · odds ${pct(a['market %'])} vs stats ${pct(a['stats %'])} · ours ${pct(a['our %'])} <span class="muted tiny">${esc(a.event)}</span></div>
+          ${a.why.map(w => `<div class="tiny muted">• ${esc(w)}</div>`).join('')}</div>`).join('')
+        : `<p class="muted small" style="margin:4px 0 0">No very hyped favourites on the upcoming cards${d.division ? ' at ' + esc(d.division) : ''}.</p>`) + `</div>`;
+    }
+    html += `<div class="card"><h2>Up-and-comers${d.division ? ' · ' + esc(d.division) : ''}</h2>
+      <p class="muted tiny" style="margin:0 0 4px">2-7 UFC fights, 31 or younger, winning and active. Most hyped first.</p>`;
+    if (!d.list.length) html += `<p class="muted small">None found.</p>`;
+    for (const u of d.list) {
+      html += `<div class="fight"><div class="between"><span><span class="name">${esc(u.fighter)}</span>
+          <span class="muted small">${esc(u.record)} · ${esc(u.division)}${u.age ? ' · ' + Math.round(u.age) : ''}</span></span>
+          <span class="pill ${hypeClass(u.meter)}">${u.meter} · ${esc(u.label)}</span></div>
+        ${meterBar(u.meter)}
+        <div class="tiny muted">odds ${pct(u['market %'])} vs stats ${pct(u['stats %'])} · ${esc(u.basis)}</div>
+        ${u.why ? u.why.split('; ').map(w => `<div class="tiny muted">• ${esc(w)}</div>`).join('') : ''}
+        <div class="links" style="margin-top:4px"><a href="#" data-profile="${esc(u.fighter_id)}">Profile</a><a href="#" data-buzz="${esc(u.fighter)}">Media buzz</a><span class="tiny muted" data-buzz-out></span></div>
+      </div>`;
+    }
+    html += `</div>`;
+    out.innerHTML = html;
+    out.querySelectorAll('[data-profile]').forEach(a => a.onclick = ev => { ev.preventDefault(); show('fighters'); loadFighter(a.dataset.profile); });
+    out.querySelectorAll('[data-buzz]').forEach(a => a.onclick = async ev => {
+      ev.preventDefault();
+      const slot = a.parentElement.querySelector('[data-buzz-out]');
+      slot.textContent = 'checking…';
+      try { const b = await api('buzz', {name: a.dataset.buzz.replace(/ \(\d+ lbs\)$/, '')}); slot.textContent = `${b.headlines_30d} headlines in 30 days (context only)`; }
+      catch (e) { slot.textContent = e.message; }
+    });
+  } catch (e) { fail(out, e); }
 }
 
 // ---- news ---------------------------------------------------------------------
@@ -615,6 +724,7 @@ function renderPhone(desktop, phone) {
 }
 
 (async () => {
+  loadDivisions();
   try {
     const s = await api('status');
     if (!s.has_data) {
