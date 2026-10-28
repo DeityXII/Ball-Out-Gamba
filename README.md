@@ -6,20 +6,27 @@ A command-line tool that builds a clean database of **every UFC fight in history
 - fighter profiles, career stats and fight logs
 - side-by-side matchup breakdowns, head-to-head history and common opponents
 - a win-probability model plus KO / submission / decision estimates
-- a model + betting-market blend, learned from ~3,200 historical lines, that beats the
-  market on its own
-- edge, expected value and Kelly stake sizing against your sportsbook's odds
-- whole-card analysis from a CSV, with value bets ranked
+- **live odds for upcoming UFC cards** from every major US sportsbook, with the best
+  price on each fighter, line movement, and the market's method-of-victory props
+- **news checks** that flag injuries, withdrawals, short-notice replacements, weight
+  misses and suspensions for every fighter on a card
+- a model + betting-market blend, learned from ~4,900 historical closing lines
+  (2014 → last weekend), that beats the market on its own
+- edge, expected value and Kelly stake sizing at the best available price
+- whole-card analysis from a CSV of your own odds, with value bets ranked
 - an honest walk-forward backtest so you know how much to trust it
 
 ## Setup
 
 ```bash
-pip install -r requirements.txt     # numpy, pandas, requests
-python -m ballout update            # download data, build tables, train model (~10 s)
+pip install -r requirements.txt     # numpy, pandas, requests, beautifulsoup4, lxml
+python -m ballout update            # download data, odds history, train model
 ```
 
-Re-run `update` after each event to pull the latest results. (Or `pip install -e .`
+The first `update` takes about 8 minutes because it downloads closing lines for every UFC
+event since 2023, one page per second. Later runs only fetch new events and take about
+15 seconds (`--no-live-odds` skips this step). Re-run `update` after each event to pull
+the latest results. (Or `pip install -e .`
 and use the `ballout` command instead of `python -m ballout`.)
 
 ## Data
@@ -27,9 +34,16 @@ and use the `ballout` command instead of `python -m ballout`.)
 Fight data comes from [ufcstats.com](http://ufcstats.com) (the UFC's official stats
 provider) via the community-maintained mirror at
 [Greco1899/scrape_ufc_stats](https://github.com/Greco1899/scrape_ufc_stats), which is
-refreshed regularly. Historical betting odds (late 2014–2023) come from
-[jansen88/ufc-data](https://github.com/jansen88/ufc-data). `update` cleans and joins
-everything into `data/processed/`:
+refreshed regularly. Betting odds come from two places:
+
+- **2014–2023:** [jansen88/ufc-data](https://github.com/jansen88/ufc-data).
+- **2023–today and upcoming fights:** [BestFightOdds](https://www.bestfightodds.com), which
+  collects lines from FanDuel, DraftKings, BetMGM, Caesars, BetRivers, BetWay, Unibet and
+  the prediction markets (its robots.txt allows crawling; the tool waits one second
+  between requests and caches completed events).
+
+News comes from Google News search (per fighter), ESPN and Sherdog. `update` cleans and
+joins everything into `data/processed/`:
 
 | file | contents |
 |---|---|
@@ -38,7 +52,8 @@ everything into `data/processed/`:
 | `rounds.csv` | the same stats round by round |
 | `fighters.csv` | height, weight, reach, stance, date of birth, nickname |
 | `events.csv` | event dates and locations |
-| `odds.csv` | historical decimal odds matched to fight ids |
+| `odds.csv` | closing odds matched to fight ids: typical (median) price per fighter, and best price for 2023+ |
+| `bfo_closing.csv` | BestFightOdds closing lines per fight, with book count and best price and book |
 | `prefight_features.csv` | each fighter's stats *as they stood before* every fight, for your own modelling |
 
 The CSVs open directly in Excel / Google Sheets / pandas if you want to dig yourself.
@@ -46,10 +61,15 @@ The CSVs open directly in Excel / Google Sheets / pandas if you want to dig your
 ## Commands
 
 ```bash
+python -m ballout upcoming                                 # every upcoming UFC card, live odds
+python -m ballout upcoming --event "UFC 334" --news --bankroll 500
+python -m ballout news "Amanda Nunes"                      # recent headlines + red flags
+python -m ballout news                                     # latest UFC headlines
 python -m ballout fighter "Islam Makhachev"                # profile + last 10 fights
 python -m ballout search silva                             # find fighters by partial name
 python -m ballout matchup "Ilia Topuria" "Islam Makhachev"   # full breakdown + model
 python -m ballout matchup "Ilia Topuria" "Makhachev" --odds +105 -125 --bankroll 500
+python -m ballout matchup "Ciryl Gane" "Josh Hokit" --live --news   # uses today's best prices
 python -m ballout card examples/sample_card.csv --bankroll 500 --out picks.csv
 python -m ballout leaders --division lightweight           # top active fighters by Elo
 python -m ballout event "UFC 333"                          # results of a past event
@@ -60,7 +80,28 @@ Names are forgiving: case, accents and small typos are fine (`makhachv`, `conor 
 Where two fighters share a name (e.g. the two Bruno Silvas) you'll be shown both with
 their ids; pass the id instead of the name.
 
-### Analysing a card
+### Upcoming cards (live odds)
+
+`upcoming` pulls every scheduled UFC event from BestFightOdds and, for each fight, shows:
+
+- the **market** probability: the median no-vig line across sportsbooks;
+- the stats **model** and **ours** (the model and market blended);
+- the **best price** on each fighter and which book has it, plus the expected value there;
+- **moved**: how much the line has shifted since you first ran `upcoming` on that fight.
+  Snapshots are kept in `data/odds_snapshots.csv`, so run it every day or two before a
+  card to watch the money move;
+- **how the market expects it to end**: decision, KO and submission chances for each
+  fighter, taken from the sportsbooks' prop bets;
+- a **value bets** list: sides with at least `--min-ev` expected return (default 5%) at the
+  best available price. A price far above every other book's is flagged as possibly stale.
+
+Add `--news` to scan every fighter's last three weeks of headlines for injury, withdrawal,
+weight and suspension red flags. Add `--unscheduled` to include announced fights that don't
+have a date yet. Their lines are often stale, so those fights never count as value bets.
+
+Debutants with no UFC history are shown at the market price only.
+
+### Analysing your own card
 
 Make a CSV with one row per fight (odds are optional, American or decimal). See
 `examples/sample_card.csv`; its matchups and odds are made up for demonstration.
@@ -71,20 +112,19 @@ Ilia Topuria,Islam Makhachev,+105,-125,Lightweight
 Max Holloway,Justin Gaethje,-160,+135,Lightweight
 ```
 
-`card` prints the pick for every bout, then a **value bets** table: every side where our
-estimate beats the bookmaker's no-vig probability by at least `--min-edge` (default 5
-points, the level that was profitable in the backtest), with EV per $100 and a stake.
-Add `--detail` for the full matchup breakdown of every fight.
+`card` prints the pick for every bout, then a **value bets** table: every side whose
+expected return at your price is at least `--min-ev` (default 5%), with a stake. Add
+`--detail` for the full matchup breakdown of every fight.
 
 ### Reading the betting numbers
 
 - **model %**: the stats model on its own.
 - **market %**: the bookmaker's probability with their margin (vig) removed.
-- **blend %**: model and market combined; this is the number the edge, EV and stake use.
-  You need odds for both fighters to get it.
+- **blend % / ours**: model and market combined; this is the number the edge, EV and stake
+  use. You need odds for both fighters to get it.
 - **fair line**: the odds at which the estimate breaks even.
 - **edge %**: blend probability minus market probability.
-- **EV/$100**: expected profit per $100 staked at the book's price.
+- **EV**: expected profit per $1 (or per $100) staked at that price.
 - **kelly %**: share of bankroll to stake, using quarter Kelly (`--kelly`) and capped at 5%.
 
 ## How the model works
@@ -104,10 +144,12 @@ Add `--detail` for the full matchup breakdown of every fight.
    features. It is trained on both orderings of every fight, so it can't pick up on
    ufcstats listing the winner first.
 4. **Market blend.** With odds for both sides, the model's probability is combined with the
-   market's no-vig probability on the log-odds scale. The weights (currently market 1.00,
-   model 0.22) are learned from historical lines; see below.
+   market's no-vig probability on the log-odds scale. The weights (currently market 1.03,
+   model 0.21) are learned from historical closing lines; see below.
 5. **Method model.** P(KO / SUB / DEC | win) blends how each fighter usually wins with how
-   their opponent usually loses, shrunk toward the weight-class average.
+   their opponent usually loses, shrunk toward the weight-class average. Against
+   2023–26 prop prices it was *worse* than the market at calling decisions (log loss 0.707
+   vs 0.641), so `upcoming` shows the market's props and never calls a prop a value bet.
 
 ### Track record (walk-forward backtest)
 
@@ -124,39 +166,43 @@ only on the fights before it.
 
 It is well calibrated: fights it calls 60–70% were won by its pick 65% of the time.
 
-**Against the betting market** (2,726 fights with odds, 2016–2023)
+**Against the betting market** (4,376 fights with closing odds, 2016–2026)
 
 | | picks correct | log loss |
 |---|---|---|
-| betting market (no-vig) | 66.1% | 0.6095 |
-| stats model alone | 61.9% | 0.6508 |
-| **model + market blend** | **66.4%** | **0.6090** |
+| betting market (no-vig) | 67.6% | 0.6012 |
+| stats model alone | 62.6% | 0.6460 |
+| **model + market blend** | **67.6%** | **0.6001** |
 
-**Did betting the edges make money?** (flat 1-unit bets, same fights)
+On 2023–26 alone, newer data the blend was never tuned on, the market scores 0.5882 and
+the blend 0.5859.
 
-| min edge | stats model alone | model + market blend |
-|---|---|---|
-| 0% | 2,726 bets, −5.8% ROI | 2,726 bets, +0.3% ROI |
-| 3% | 2,266 bets, −5.3% | 635 bets, +0.5% |
-| 5% | 1,981 bets, −7.1% | 118 bets, **+18.5%** |
+**Did betting it make money?** Flat 1-unit bets on every side with at least the given
+expected return:
+
+| min expected return | stats model, typical price | blend, typical price | blend, **best price** (2023–26) |
+|---|---|---|---|
+| 0% | 4,074 bets, −7.6% | 2,577 bets, +0.5% | 1,365 bets, **+3.9%** |
+| 3% | 3,748 bets, −7.5% | 1,209 bets, +0.2% | 556 bets, **+4.5%** |
+| 5% | 3,538 bets, −7.7% | 751 bets, −1.7% | 318 bets, **+11.3%** |
 
 What this means:
 
 - **Never bet the raw stats model against the line.** Its "edges" are mostly underdogs the
-  market has correctly priced low, and it lost 5–7% across the board. That's why the
-  tool now edges against the blend.
+  market has correctly priced low, and it lost about 8% across the board.
 - **The market is the stronger signal, but the model adds real information on top.** The
-  blend beats the market alone, and the model's weight (0.22 ± 0.09) is clearly above
-  zero. Part of what it learns is that the market slightly underprices big favourites:
-  fighters the market rated 70–80% won 79.6% of the time.
-- **Blend edges of 5%+ were profitable, but the sample is small.** 118 bets over 8 years
-  is about 15 a year, and +18.5% ± 12.5% on 118 bets is only about 1.5 standard errors
-  from zero: encouraging, but it could still be luck. Treat it as a filter for where to
-  look, not a money printer.
-- **The historical odds carry about 1% bookmaker margin.** A typical sportsbook charges
-  4–5%, which costs another 2–3 points of ROI. Shop around for the best line.
-- **None of this knows about injuries, short-notice replacements or bad weight cuts.**
-  Check the news before betting.
+  model's blend weight is 0.21 ± 0.07 (3 standard errors from zero). Part of what it learns
+  is that the market underprices big favourites: fighters the market rated 70–80% won
+  78.4% of the time, and 80–90% favourites won 86.9%.
+- **At a typical sportsbook price, the blend roughly breaks even.** The bookmaker's margin
+  eats the small edge.
+- **Line shopping is where the money is.** Taking the best price across books turned the
+  same picks positive: +3.9% on 1,365 bets (±2.8%), and +11.3% on the 318 with 5%+
+  expected return (±7.7%). This assumes you hold accounts at several books. Closing "best
+  prices" can include brief quotes you couldn't actually get, so treat these as upper
+  bounds: promising, not proven.
+- **Check the news.** The stats know nothing about injuries, short-notice replacements or
+  bad weight cuts. `--news` exists because those are exactly what moves lines.
 
 ## Tests
 

@@ -26,7 +26,7 @@ class BlendTests(unittest.TestCase):
     def test_roi_table(self):
         wf = pd.DataFrame({"p_model": [0.6, 0.3], "p_market": [0.5, 0.5],
                            "dec_a": [2.0, 2.0], "dec_b": [2.0, 2.0], "y": [1.0, 1.0]})
-        roi = market.roi_table(wf, "p_model", thresholds=(0.05,)).iloc[0]
+        roi = market.roi_table(wf, "p_model", thresholds=(0.05,)).iloc[0]  # EV = p * dec - 1
         # bets: fight 1 side A (wins +1), fight 2 side B (loses -1)
         self.assertEqual(roi["bets"], 2)
         self.assertAlmostEqual(roi["profit (units)"], 0.0)
@@ -46,14 +46,14 @@ class OddsMatchingTests(unittest.TestCase):
             "favourite": ["Ian Garry", "Some One"], "underdog": ["Neil Magny", "Other Guy"],
             "favourite_odds": [1.3, 1.5], "underdog_odds": [3.6, 2.7],
         })
-        old = config.RAW_DIR
+        old = config.RAW_DIR, config.PROCESSED_DIR
         with tempfile.TemporaryDirectory() as tmp:
-            config.RAW_DIR = Path(tmp)
+            config.RAW_DIR = config.PROCESSED_DIR = Path(tmp)
             try:
                 raw.to_csv(Path(tmp) / config.ODDS_FILE, index=False)
                 out = market.build_odds(fights, verbose=False).set_index("fight_id")
             finally:
-                config.RAW_DIR = old
+                config.RAW_DIR, config.PROCESSED_DIR = old
         self.assertEqual(out.loc["f1", "dec_a"], 1.3)  # Garry is our fighter_a and the favourite
         self.assertEqual(out.loc["f1", "dec_b"], 3.6)
         self.assertEqual(out.loc["f2", "dec_a"], 1.5)

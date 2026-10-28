@@ -1,7 +1,7 @@
 """Historical betting odds: matching, market benchmark, model+market blend, ROI backtest.
 
-Odds come from https://github.com/jansen88/ufc-data (decimal odds for ~3,500
-UFC fights, late 2014 - 2023). They are used to
+Odds come from https://github.com/jansen88/ufc-data (late 2014 - 2023) and
+BestFightOdds closing lines (2023 - today, see bfo.py). They are used to
 
   * measure the model against the betting market on the same fights,
   * learn how much weight to give the model vs the market when you supply
@@ -19,7 +19,7 @@ import pandas as pd
 from . import config
 from .model import _log_loss, _sigmoid, fit_logistic, train_win_model
 
-EDGE_THRESHOLDS = (0.0, 0.03, 0.05, 0.08, 0.10, 0.15)
+EV_THRESHOLDS = (0.0, 0.03, 0.05, 0.08, 0.10)
 
 
 def _norm(s: str) -> str:
@@ -32,59 +32,97 @@ def _logit(p):
     return np.log(p / (1 - p))
 
 
-def build_odds(fights: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
-    """Match raw odds rows to fight ids; returns fight_id, dec_a, dec_b (aligned to fighter_a/b)."""
-    path = config.RAW_DIR / config.ODDS_FILE
-    if not path.exists():
-        return pd.DataFrame(columns=["fight_id", "dec_a", "dec_b"])
-    o = pd.read_csv(path)
-    o = o[np.isfinite(o["favourite_odds"]) & np.isfinite(o["underdog_odds"])]
-    o = o[(o["favourite_odds"] > 1.0) & (o["underdog_odds"] > 1.0)]
-    over = 1 / o["favourite_odds"] + 1 / o["underdog_odds"] - 1
-    o = o[(over > -0.02) & (over < 0.15)].copy()  # drop corrupt lines
-    o["date"] = pd.to_datetime(o["event_date"])
+BFO_CLOSING = "bfo_closing.csv"  # written by `update` from bfo.update_history()
 
-    by_date: dict[pd.Timestamp, list] = {}
-    for r in fights.itertuples(index=False):
-        by_date.setdefault(r.date, []).append((r.fight_id, _norm(r.fighter_a), _norm(r.fighter_b)))
 
-    def sim(x: str, y: str) -> float:
-        if x == y:
-            return 1.0
-        if x.split()[-1] == y.split()[-1]:
-            return 0.9
-        return difflib.SequenceMatcher(None, x, y).ratio()
+def _sim(x: str, y: str) -> float:
+    if x == y:
+        return 1.0
+    if x.split()[-1] == y.split()[-1]:
+        return 0.9
+    return difflib.SequenceMatcher(None, x, y).ratio()
 
-    def match(date, n1, n2):
-        """-> (fight_id, fighter1_is_our_fighter_a) or (None, None).
 
-        Exact names first; otherwise allow one renamed fighter (e.g. "Ian Garry"
-        -> "Ian Machado Garry") as long as the match is unique on that date."""
+class FightMatcher:
+    """Find our fight id for an odds row given its date and two fighter names.
+
+    Allows one day either side of the date (sites differ on time zones) and
+    one renamed fighter (e.g. "Ian Garry" -> "Ian Machado Garry"), as long as
+    the match is unique."""
+
+    def __init__(self, fights: pd.DataFrame):
+        self.by_date: dict[pd.Timestamp, list] = {}
+        for r in fights.itertuples(index=False):
+            self.by_date.setdefault(r.date, []).append((r.fight_id, _norm(r.fighter_a), _norm(r.fighter_b)))
+
+    def match(self, date, name1: str, name2: str) -> tuple[str | None, bool | None]:
+        """-> (fight_id, name1_is_our_fighter_a) or (None, None)."""
+        n1, n2 = _norm(name1), _norm(name2)
         scored = []
-        for fid, a, b in by_date.get(date, []):
-            for score, straight in ((min(sim(n1, a), sim(n2, b)), True), (min(sim(n1, b), sim(n2, a)), False)):
-                pair = (sim(n1, a), sim(n2, b)) if straight else (sim(n1, b), sim(n2, a))
-                if score >= 0.6 and max(pair) == 1.0:
-                    scored.append((score, fid, straight))
+        for delta in (0, -1, 1):
+            for fid, a, b in self.by_date.get(date + pd.Timedelta(days=delta), []):
+                for straight in (True, False):
+                    pair = (_sim(n1, a), _sim(n2, b)) if straight else (_sim(n1, b), _sim(n2, a))
+                    if min(pair) >= 0.6 and max(pair) == 1.0:
+                        scored.append((min(pair) - 0.01 * abs(delta), fid, straight))
         scored.sort(reverse=True)
         if not scored or (len(scored) > 1 and scored[1][0] == scored[0][0] and scored[1][1] != scored[0][1]):
             return None, None
         return scored[0][1], scored[0][2]
 
+
+def _jansen_rows() -> pd.DataFrame:
+    path = config.RAW_DIR / config.ODDS_FILE
+    if not path.exists():
+        return pd.DataFrame()
+    o = pd.read_csv(path)
+    o = o[np.isfinite(o["favourite_odds"]) & np.isfinite(o["underdog_odds"])]
+    o = o[(o["favourite_odds"] > 1.0) & (o["underdog_odds"] > 1.0)]
+    over = 1 / o["favourite_odds"] + 1 / o["underdog_odds"] - 1
+    o = o[(over > -0.02) & (over < 0.15)]  # drop corrupt lines
+    fav1 = o["favourite"].map(_norm) == o["fighter1"].map(_norm)
+    return pd.DataFrame({
+        "date": pd.to_datetime(o["event_date"]), "fighter1": o["fighter1"], "fighter2": o["fighter2"],
+        "dec1": np.where(fav1, o["favourite_odds"], o["underdog_odds"]),
+        "dec2": np.where(fav1, o["underdog_odds"], o["favourite_odds"]),
+        "best1": np.nan, "best2": np.nan, "source": "jansen88",
+    })
+
+
+def _bfo_rows() -> pd.DataFrame:
+    path = config.PROCESSED_DIR / BFO_CLOSING
+    if not path.exists():
+        return pd.DataFrame()
+    b = pd.read_csv(path, parse_dates=["date"]).drop_duplicates("matchup_id")
+    return pd.DataFrame({"date": b["date"], "fighter1": b["fighter1"], "fighter2": b["fighter2"],
+                         "dec1": b["dec1_median"], "dec2": b["dec2_median"],
+                         "best1": b["dec1_best"], "best2": b["dec2_best"], "source": "bestfightodds"})
+
+
+def build_odds(fights: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+    """Historical closing odds matched to fight ids.
+
+    Returns fight_id, dec_a, dec_b (aligned to our fighter_a/b) and source.
+    BestFightOdds (2023+, median across sportsbooks) wins where both sources
+    price the same fight."""
+    raw = pd.concat([_bfo_rows(), _jansen_rows()], ignore_index=True)
+    if raw.empty:
+        return pd.DataFrame(columns=["fight_id", "dec_a", "dec_b", "best_a", "best_b", "source"])
+    matcher = FightMatcher(fights)
     rows = []
-    for r in o.itertuples(index=False):
-        n1, n2 = _norm(r.fighter1), _norm(r.fighter2)
-        fid, straight = match(r.date, n1, n2)
+    for r in raw.itertuples(index=False):
+        fid, straight = matcher.match(r.date, r.fighter1, r.fighter2)
         if fid is None:
             continue
-        fav = _norm(r.favourite)
-        odds1 = r.favourite_odds if fav == n1 else r.underdog_odds
-        odds2 = r.underdog_odds if fav == n1 else r.favourite_odds
-        dec_a, dec_b = (odds1, odds2) if straight else (odds2, odds1)
-        rows.append({"fight_id": fid, "dec_a": float(dec_a), "dec_b": float(dec_b)})
+        dec_a, dec_b = (r.dec1, r.dec2) if straight else (r.dec2, r.dec1)
+        best_a, best_b = (r.best1, r.best2) if straight else (r.best2, r.best1)
+        rows.append({"fight_id": fid, "dec_a": float(dec_a), "dec_b": float(dec_b),
+                     "best_a": float(best_a), "best_b": float(best_b), "source": r.source})
     out = pd.DataFrame(rows).drop_duplicates("fight_id")
     if verbose:
-        print(f"  matched historical odds for {len(out)} of {len(o)} priced fights")
+        counts = out["source"].value_counts().to_dict()
+        print(f"  matched historical odds for {len(out)} fights "
+              + ", ".join(f"{k}: {v}" for k, v in counts.items()))
     return out
 
 
@@ -151,23 +189,27 @@ def summary(wf: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def roi_table(wf: pd.DataFrame, prob_col: str, thresholds=EDGE_THRESHOLDS) -> pd.DataFrame:
-    """Flat 1-unit bets on every side whose edge (prob - no-vig prob) beats the threshold."""
+def roi_table(wf: pd.DataFrame, prob_col: str, thresholds=EV_THRESHOLDS,
+              price: str = "dec") -> pd.DataFrame:
+    """Flat 1-unit bets on every side whose expected value at the given price
+    (prob x decimal odds - 1) beats the threshold.
+
+    price="dec" uses the typical (median) price, "best" the best price across
+    sportsbooks (only available for BestFightOdds-era fights)."""
     rows = []
     for th in thresholds:
         stakes = won = profit = 0.0
         n_dog = 0
         for side in ("a", "b"):
             p = wf[prob_col] if side == "a" else 1 - wf[prob_col]
-            pm = wf["p_market"] if side == "a" else 1 - wf["p_market"]
-            dec = wf[f"dec_{side}"]
+            dec = wf[f"{price}_{side}"]
             win = wf["y"] if side == "a" else 1 - wf["y"]
-            sel = (p - pm) > th
+            sel = (p * dec - 1 > th) & dec.notna()
             stakes += sel.sum()
             won += win[sel].sum()
             profit += ((dec[sel] - 1) * win[sel] - (1 - win[sel])).sum()
             n_dog += (sel & (dec > 2.0)).sum()
-        rows.append({"min edge": th, "bets": int(stakes), "win %": won / stakes if stakes else np.nan,
+        rows.append({"min EV": th, "bets": int(stakes), "win %": won / stakes if stakes else np.nan,
                      "underdog bets %": n_dog / stakes if stakes else np.nan,
                      "profit (units)": profit, "ROI": profit / stakes if stakes else np.nan})
     return pd.DataFrame(rows)

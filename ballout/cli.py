@@ -8,7 +8,9 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import config, data, features, market, model, odds
+import requests
+
+from . import bfo, config, data, features, market, model, news, odds, upcoming
 from .analysis import Database, LookupError_
 
 pd.set_option("display.width", 200)
@@ -16,8 +18,8 @@ pd.set_option("display.max_columns", 50)
 pd.set_option("display.max_colwidth", 60)
 
 MAX_STAKE = 0.05  # never suggest more than this fraction of bankroll on one bet
-DISCLAIMER = ("Model output is an estimate from historical stats only - it knows nothing about injuries, "
-              "camp changes or weight cuts. Bet only what you can afford to lose.")
+DISCLAIMER = ("These are estimates, not certainties: check the news (`news`, `--news`) for injuries, "
+              "replacements and weight cuts, and bet only what you can afford to lose.")
 
 
 def _pct(x, digits=0):
@@ -52,6 +54,14 @@ def cmd_update(args):
         metrics = bt[bt["year"] == "ALL"].iloc[0].to_dict()
         print(f"  walk-forward backtest 2012-present: {metrics['acc_model']:.1%} picks correct, "
               f"log loss {metrics['logloss_model']:.3f} over {metrics['fights']} fights")
+    if not args.no_live_odds:
+        print("Updating closing lines from BestFightOdds...")
+        try:
+            closing = bfo.update_history()
+            if len(closing):
+                closing.to_csv(config.PROCESSED_DIR / market.BFO_CLOSING, index=False)
+        except requests.RequestException as e:
+            print(f"  warning: BestFightOdds unavailable ({e}); using previously saved lines")
     hist_odds = market.build_odds(tables["fights"])
     hist_odds.to_csv(config.PROCESSED_DIR / "odds.csv", index=False)
     weights = market.final_blend_weights(rep.rows, hist_odds) if len(hist_odds) else None
@@ -118,6 +128,30 @@ def _format_priced(priced: pd.DataFrame) -> pd.DataFrame:
     if "EV/$100" in fmt:
         fmt["EV/$100"] = fmt["EV/$100"].map(lambda x: f"{x:+.2f}")
     return fmt
+
+
+def _print_headlines(name: str, headlines, limit: int = 6):
+    flags = news.summarize_flags(headlines)
+    print(f"{name}: " + (f"FLAGS - {flags}" if flags else "no injury / withdrawal / weight flags")
+          + ("" if headlines else " (no recent headlines found)"))
+    for h in headlines[:limit]:
+        tag = f" [{', '.join(h.flags)}]" if h.flags else ""
+        when = f"{h.published:%b %d}" if not pd.isna(h.published) else "     "
+        print(f"  {when}  {h.title[:110]}{tag}  ({h.source})")
+
+
+def _live_odds_for(db: Database, a_id: str, b_id: str):
+    """Best current prices for a matchup if it's on an upcoming card, else None."""
+    for ev in bfo.upcoming(include_unscheduled=True):
+        for c in ev["consensus"].itertuples(index=False):
+            ids = (db.find_strict(c.fighter1), db.find_strict(c.fighter2))
+            if set(ids) == {a_id, b_id}:
+                straight = ids[0] == a_id
+                pa = c.dec1_best if straight else c.dec2_best
+                pb = c.dec2_best if straight else c.dec1_best
+                books = (c.book1_best, c.book2_best) if straight else (c.book2_best, c.book1_best)
+                return ev["name"], ev["date"], pa, pb, books, c.books
+    return None
 
 
 def _print_matchup(db: Database, pred, odds_a=None, odds_b=None, bankroll=None, kelly=0.25):
@@ -207,7 +241,23 @@ def cmd_matchup(args, db: Database):
     b = db.find(args.fighter_b)
     pred = db.predict(a, b, args.date, args.weight_class)
     oa, ob = (args.odds or (None, None))
+    if args.live and not args.odds:
+        live = _live_odds_for(db, a, b)
+        if live:
+            ev_name, ev_date, oa, ob, books, n = live
+            if not pd.isna(ev_date) and not args.date:
+                pred = db.predict(a, b, ev_date, args.weight_class)
+            print(f"Live odds ({ev_name}, best of {n} sportsbooks): {pred.a.name} "
+                  f"{odds.decimal_to_american(oa)} at {books[0]}, {pred.b.name} {odds.decimal_to_american(ob)} "
+                  f"at {books[1]}")
+        else:
+            print("This fight isn't on an upcoming card at BestFightOdds; showing the model only.")
     _print_matchup(db, pred, oa, ob, args.bankroll, args.kelly)
+    if args.news:
+        _header("Recent news")
+        session = requests.Session()
+        for st in (pred.a, pred.b):
+            _print_headlines(st.name, news.fighter_news(st.name, days=args.news_days, session=session))
     print(f"\n{DISCLAIMER}")
 
 
@@ -262,10 +312,10 @@ def cmd_card(args, db: Database):
 
     priced = out[out["book"] != ""]
     if len(priced):
-        value = priced[priced["edge %"] >= args.min_edge].sort_values("EV/$100", ascending=False)
-        _header(f"Value bets (edge >= {args.min_edge:.0%} over the no-vig line)")
+        value = priced[priced["EV/$100"] >= 100 * args.min_ev].sort_values("EV/$100", ascending=False)
+        _header(f"Value bets (expected return >= {args.min_ev:.0%} at the listed price)")
         if value.empty:
-            print("None - no side beats the no-vig line by that much on this card.")
+            print("None on this card at these prices.")
         else:
             show = value[["bout", "pick", "book", "fair", "est %", "edge %", "EV/$100", "kelly %"]
                          + (["stake"] if args.bankroll else [])].copy()
@@ -275,6 +325,102 @@ def cmd_card(args, db: Database):
             show["kelly %"] = show["kelly %"].map(lambda x: _pct(x, 2))
             print(show.to_string(index=False))
     print(f"\n{DISCLAIMER}")
+
+
+def cmd_upcoming(args, db: Database):
+    print("Fetching live lines from BestFightOdds...")
+    analyses = upcoming.analyse(db, args.event, args.unscheduled, args.news, args.news_days,
+                                args.bankroll, args.kelly, MAX_STAKE)
+    if not analyses:
+        print("No upcoming UFC events found" + (f" matching '{args.event}'." if args.event else "."))
+        return
+    for ea in analyses:
+        when = "date TBA" if pd.isna(ea.date) else f"{ea.date:%a %b %d %Y}"
+        _header(f"{ea.name}  -  {when}   {ea.url}")
+        f = ea.fights
+        if f.empty:
+            print("No lines posted yet.")
+            continue
+        show = pd.DataFrame({
+            "fight": f["fighter1"] + " vs " + f["fighter2"],
+            "market": [f"{_pct(p, 0)} / {_pct(1 - p, 0)}" for p in f["p1_market"]],
+            "model": [f"{_pct(p, 0)} / {_pct(1 - p, 0)}" if not pd.isna(p) else "no data" for p in f["p1_model"]],
+            "ours": [f"{_pct(p, 1)} / {_pct(1 - p, 1)}" for p in f["p1_est"]],
+            "best prices": [f"{odds.decimal_to_american(a)} {ba} / {odds.decimal_to_american(b)} {bb}"
+                            for a, ba, b, bb in zip(f["dec1_best"], f["book1_best"], f["dec2_best"], f["book2_best"])],
+            "EV": [f"{e1:+.0%} / {e2:+.0%}" for e1, e2 in zip(f["ev1"], f["ev2"])],
+            "moved": [("-" if pd.isna(m) else f"{m * 100:+.1f}") for m in f["move"]],
+        })
+        print(show.to_string(index=False))
+        if f["move"].notna().any():
+            since = f["move_since"].dropna().min()
+            print(f"'moved' = change in {f['fighter1'].iloc[0].split()[-1]}-side market % since first checked "
+                  f"({since:%b %d %H:%M}); run `upcoming` regularly to track line movement.")
+        if "p_decision" in f and f["p_decision"].notna().any():
+            _header("How the market expects it to end (from props)")
+            f = f[f["p_decision"].notna()]
+            pm = pd.DataFrame({
+                "fight": f["fighter1"] + " vs " + f["fighter2"],
+                "decision": f["p_decision"].map(lambda x: _pct(x, 0)),
+                "fighter1 KO/SUB/DEC": [f"{_pct(a, 0)}/{_pct(b, 0)}/{_pct(c, 0)}" for a, b, c in
+                                        zip(f.get("p_1_KO", np.nan), f.get("p_1_SUB", np.nan), f.get("p_1_DEC", np.nan))],
+                "fighter2 KO/SUB/DEC": [f"{_pct(a, 0)}/{_pct(b, 0)}/{_pct(c, 0)}" for a, b, c in
+                                        zip(f.get("p_2_KO", np.nan), f.get("p_2_SUB", np.nan), f.get("p_2_DEC", np.nan))],
+            })
+            print(pm.to_string(index=False))
+            f = ea.fights
+        notes = [(r.fighter1, r.fighter2, n) for r in f.itertuples() for n in r.notes]
+        for a, b, n in notes:
+            print(f"Note ({a} vs {b}): {n}")
+        if ea.news:
+            _header("News check")
+            for name, hs in ea.news.items():
+                flagged = [h for h in hs if h.flags]
+                if flagged or args.all_news:
+                    _print_headlines(name, flagged if not args.all_news else hs, limit=4)
+            clean = [n for n, hs in ea.news.items() if not any(h.flags for h in hs)]
+            if clean and not args.all_news:
+                print(f"No flags for: {', '.join(clean)}")
+
+    if any(pd.isna(ea.date) for ea in analyses):
+        print("\nNote: lines on fights without a date are often stale and some of those fights never happen, "
+              "so they are left out of the value bets below.")
+    vb = upcoming.value_bets(analyses, args.min_ev)
+    _header(f"Value bets (expected return >= {args.min_ev:.0%} at the best available price)")
+    if vb.empty:
+        print("None right now. Lines move - check again closer to fight night.")
+    else:
+        show = vb.copy()
+        for c in ("our %", "market %"):
+            show[c] = show[c].map(lambda x: _pct(x, 1))
+        show["EV"] = show["EV"].map(lambda x: f"{x:+.1%}")
+        show["kelly %"] = show["kelly %"].map(lambda x: _pct(x, 2))
+        show["market only"] = np.where(show["market only"], "yes", "")
+        if not args.bankroll:
+            show = show.drop(columns="stake")
+        print(show.to_string(index=False))
+        print("'ours' blends the stats model with the market. 'market only' = a fighter without UFC history, so "
+              "the value comes purely from one book beating the consensus price.")
+    print(f"\n{DISCLAIMER}")
+
+
+def cmd_news(args, db: Database | None = None):
+    session = requests.Session()
+    if args.fighter:
+        name = args.fighter
+        if db is not None:
+            try:
+                name = db.states[db.find(args.fighter)].name
+            except LookupError_:
+                pass
+        _print_headlines(name, news.fighter_news(name, days=args.days, session=session, limit=args.limit),
+                         limit=args.limit)
+        return
+    hs = news.general_news(args.limit, session=session)
+    for h in hs:
+        tag = f" [{', '.join(h.flags)}]" if h.flags else ""
+        when = f"{h.published:%b %d %H:%M}" if not pd.isna(h.published) else ""
+        print(f"{when:12s} {h.source:8s} {h.title[:110]}{tag}")
 
 
 def cmd_leaders(args, db: Database):
@@ -329,17 +475,24 @@ def cmd_backtest(args):
     summ["log loss"] = summ["log loss"].map(lambda x: _num(x, 4))
     summ["brier"] = summ["brier"].map(lambda x: _num(x, 4))
     print(summ.to_string(index=False))
-    for label, col in (("stats model alone", "p_model"), ("model + market blend", "p_blend")):
-        _header(f"Flat 1-unit bets on every edge, using the {label}")
-        roi = market.roi_table(wf, col)
-        roi["min edge"] = roi["min edge"].map(lambda x: _pct(x))
+    shop = wf[wf["best_a"].notna()]
+    tables_ = [("stats model alone, typical price", wf, "p_model", "dec"),
+               ("model + market blend, typical price", wf, "p_blend", "dec")]
+    if len(shop):
+        tables_.append((f"model + market blend, best price across books ({shop['date'].min():%Y}-"
+                        f"{shop['date'].max():%Y})", shop, "p_blend", "best"))
+    for label, frame, col, price in tables_:
+        _header(f"Flat 1-unit bets on every positive-EV side: {label}")
+        roi = market.roi_table(frame, col, price=price)
+        roi["min EV"] = roi["min EV"].map(lambda x: _pct(x))
         roi["win %"] = roi["win %"].map(lambda x: _pct(x, 1))
         roi["underdog bets %"] = roi["underdog bets %"].map(lambda x: _pct(x))
         roi["profit (units)"] = roi["profit (units)"].map(lambda x: f"{x:+.1f}")
         roi["ROI"] = roi["ROI"].map(lambda x: "-" if pd.isna(x) else f"{x:+.1%}")
         print(roi.to_string(index=False))
-    print("\nOdds in this history carry ~1% bookmaker margin (sharp/average lines); a typical sportsbook "
-          "charges 4-5%, which would cut every ROI above by roughly 2-3 points. Shop for the best line.")
+    print("\n'Typical price' is the 2014-2022 average line (~1% margin, so flattering) and, from 2023, the median "
+          "across sportsbooks (~4-5% margin, realistic). 'Best price' assumes you can bet at whichever "
+          "book is best - that line shopping is where most of the edge comes from.")
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +504,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("update", help="download latest fight data, rebuild tables and retrain model")
     s.add_argument("--skip-download", action="store_true", help="rebuild from already-downloaded raw files")
     s.add_argument("--no-backtest", action="store_true", help="skip the walk-forward backtest (faster)")
+    s.add_argument("--no-live-odds", action="store_true",
+                   help="don't fetch recent closing lines from BestFightOdds (first run takes ~8 min)")
 
     s = sub.add_parser("search", help="find fighters by (partial) name")
     s.add_argument("query")
@@ -368,14 +523,34 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--weight-class", help="e.g. Lightweight (default: most recent division)")
     s.add_argument("--bankroll", type=float, help="bankroll for stake sizing")
     s.add_argument("--kelly", type=float, default=0.25, help="Kelly multiplier (default 0.25 = quarter Kelly)")
+    s.add_argument("--live", action="store_true", help="use the best current odds if the fight is on an upcoming card")
+    s.add_argument("--news", action="store_true", help="show recent headlines for both fighters")
+    s.add_argument("--news-days", type=int, default=30)
+
+    s = sub.add_parser("upcoming", help="analyse upcoming UFC cards from live sportsbook odds")
+    s.add_argument("--event", help="only events whose name contains this, e.g. \"UFC 334\"")
+    s.add_argument("--unscheduled", action="store_true",
+                   help="also include announced UFC fights that don't have a date yet")
+    s.add_argument("--news", action="store_true", help="check every fighter's recent headlines for red flags")
+    s.add_argument("--all-news", action="store_true", help="with --news, list headlines even without flags")
+    s.add_argument("--news-days", type=int, default=21)
+    s.add_argument("--bankroll", type=float)
+    s.add_argument("--kelly", type=float, default=0.25)
+    s.add_argument("--min-ev", type=float, default=0.05,
+                   help="minimum expected return to list as a value bet (default 0.05)")
+
+    s = sub.add_parser("news", help="latest UFC headlines, or one fighter's recent news with red flags")
+    s.add_argument("fighter", nargs="?")
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--limit", type=int, default=15)
 
     s = sub.add_parser("card", help="analyse a whole card from a CSV of matchups and odds")
     s.add_argument("file", help="CSV with fighter_a, fighter_b[, odds_a, odds_b, weight_class]")
     s.add_argument("--date", help="event date (default today)")
     s.add_argument("--bankroll", type=float)
     s.add_argument("--kelly", type=float, default=0.25)
-    s.add_argument("--min-edge", type=float, default=0.05,
-                   help="minimum edge to list as value (default 0.05; smaller edges ~broke even in backtests)")
+    s.add_argument("--min-ev", type=float, default=0.05,
+                   help="minimum expected return to list as a value bet (default 0.05)")
     s.add_argument("--detail", action="store_true", help="also print the full breakdown for every fight")
     s.add_argument("--out", help="write all results to this CSV")
 
@@ -399,12 +574,17 @@ def main(argv=None):
             return cmd_update(args)
         if args.command == "backtest":
             return cmd_backtest(args)
+        if args.command == "news" and not args.fighter:
+            return cmd_news(args)
         db = Database()
         handler = {"search": cmd_search, "fighter": cmd_fighter, "matchup": cmd_matchup,
-                   "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event}[args.command]
+                   "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event,
+                   "upcoming": cmd_upcoming, "news": cmd_news}[args.command]
         handler(args, db)
     except (LookupError_, FileNotFoundError, ValueError) as e:
         sys.exit(str(e))
+    except requests.RequestException as e:
+        sys.exit(f"Network error: {e}")
 
 
 if __name__ == "__main__":

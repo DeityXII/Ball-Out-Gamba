@@ -88,6 +88,21 @@ class Database:
             f"{self.states[f].last_date:%Y-%m-%d}" for f in opts)
         raise LookupError_(f"'{query}' is ambiguous. Use the full name or the id:\n{lines}")
 
+    def find_strict(self, name: str) -> str | None:
+        """Exact (accent/case-insensitive) or near-exact full-name match, else None.
+
+        Used for scraped cards, where a debutant must not be mistaken for a
+        different UFC veteran with a similar name."""
+        nq = normalize_name(name)
+        hits = self._names.get(nq)
+        if not hits:
+            close = difflib.get_close_matches(nq, list(self._names), n=2, cutoff=0.9)
+            if len(close) == 1:
+                hits = self._names[close[0]]
+        if not hits:
+            return None
+        return max(hits, key=lambda f: self.states[f].last_date or pd.Timestamp(0))
+
     def _fuzzy(self, nq: str, cutoff: float = 0.8, limit: int = 5) -> list[str]:
         """Names close to the query, comparing the whole name and each part of it
         (so a misspelt surname alone still matches)."""

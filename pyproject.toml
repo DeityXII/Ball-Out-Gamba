@@ -7,7 +7,7 @@ name = "ballout"
 version = "0.1.0"
 description = "UFC fight history database, matchup analyzer and betting-edge calculator"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "pandas>=2.0", "requests>=2.28"]
+dependencies = ["numpy>=1.24", "pandas>=2.0", "requests>=2.28", "beautifulsoup4>=4.11", "lxml>=4.9"]
 
 [project.scripts]
 ballout = "ballout.cli:main"
