@@ -193,6 +193,15 @@ class Database:
                 notes.append(f"No date of birth for {self.states[fid].name}; age edge ignored.")
         return Prediction(sa, sb, p_a, methods, diffs, date, notes)
 
+    def drivers(self, pred: Prediction, n: int = 5) -> list[tuple[str, str]]:
+        """The features pushing the prediction hardest: [(label, favoured fighter)]."""
+        wm = self.win_model
+        contribs = {k: v / wm.scale[wm.columns.index(k)] * wm.weights[wm.columns.index(k)]
+                    for k, v in pred.diffs.items()}
+        top = sorted(contribs.items(), key=lambda kv: -abs(kv[1]))[:n]
+        return [(features.FEATURE_LABELS[k[2:]], pred.a.name if c > 0 else pred.b.name)
+                for k, c in top if abs(c) >= 0.02]
+
     def _weight_class(self, text: str) -> str:
         """Case-insensitive match of a user-typed division to the canonical name."""
         known = sorted(set(self.fights["weight_class"]), key=len, reverse=True)

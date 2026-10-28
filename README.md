@@ -66,6 +66,7 @@ python -m ballout upcoming --event "UFC 334" --news --bankroll 500
 python -m ballout news "Amanda Nunes"                      # recent headlines + red flags
 python -m ballout news                                     # latest UFC headlines
 python -m ballout fighter "Islam Makhachev"                # profile + last 10 fights
+python -m ballout footage "Islam Makhachev"                # links to watch each of their fights
 python -m ballout search silva                             # find fighters by partial name
 python -m ballout matchup "Ilia Topuria" "Islam Makhachev"   # full breakdown + model
 python -m ballout matchup "Ilia Topuria" "Makhachev" --odds +105 -125 --bankroll 500
@@ -79,6 +80,13 @@ python -m ballout backtest                                 # how accurate is the
 Names are forgiving: case, accents and small typos are fine (`makhachv`, `conor mcgregr`).
 Where two fighters share a name (e.g. the two Bruno Silvas) you'll be shown both with
 their ids; pass the id instead of the name.
+
+### Fight footage
+
+The UFC owns its fight footage, so the tool doesn't download or host video. `footage`
+(and the "Where to watch" section of `matchup`) links each fight to the official UFC
+YouTube channel (free fights and highlights), UFC Fight Pass (the full library, by
+subscription) and a general YouTube search.
 
 ### Upcoming cards (live odds)
 

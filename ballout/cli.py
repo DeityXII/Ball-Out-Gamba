@@ -10,7 +10,7 @@ import pandas as pd
 
 import requests
 
-from . import bfo, config, data, features, market, model, news, odds, upcoming
+from . import bfo, config, data, features, footage, market, model, news, odds, upcoming
 from .analysis import Database, LookupError_
 
 pd.set_option("display.width", 200)
@@ -207,11 +207,7 @@ def _print_matchup(db: Database, pred, odds_a=None, odds_b=None, bankroll=None, 
     print(meth.to_string(index=False))
     print(f"Goes the distance: {_pct(m['distance'], 1)} ({odds.prob_to_american(m['distance'])})   "
           f"Inside the distance: {_pct(1 - m['distance'], 1)} ({odds.prob_to_american(1 - m['distance'])})")
-    wm = db.win_model
-    contribs = {k: v / wm.scale[wm.columns.index(k)] * wm.weights[wm.columns.index(k)]
-                for k, v in pred.diffs.items()}
-    drivers = [f"{features.FEATURE_LABELS[k[2:]]} -> {a.name if c > 0 else b.name}"
-               for k, c in sorted(contribs.items(), key=lambda kv: -abs(kv[1]))[:5] if abs(c) >= 0.02]
+    drivers = [f"{label} -> {who}" for label, who in db.drivers(pred)]
     if drivers:
         print("Biggest factors: " + "; ".join(drivers))
 
@@ -253,6 +249,13 @@ def cmd_matchup(args, db: Database):
         else:
             print("This fight isn't on an upcoming card at BestFightOdds; showing the model only.")
     _print_matchup(db, pred, oa, ob, args.bankroll, args.kelly)
+    _header("Where to watch")
+    meetings = db.head_to_head(a, b)
+    for r in meetings.itertuples():
+        print(f"  Their {r.date:%Y} fight: {footage.links(pred.a.name, pred.b.name, r.event)['UFC YouTube']}")
+    for st in (pred.a, pred.b):
+        print(f"  {st.name}: {footage.fighter_links(st.name)['UFC YouTube']}")
+    print(f"  More: `footage \"{pred.a.name}\"` lists a link for every fight.")
     if args.news:
         _header("Recent news")
         session = requests.Session()
@@ -404,6 +407,26 @@ def cmd_upcoming(args, db: Database):
     print(f"\n{DISCLAIMER}")
 
 
+def cmd_footage(args, db: Database):
+    fid = db.find(args.name)
+    name = db.states[fid].name
+    log = db.fight_log(fid)
+    if args.vs:
+        opp = db.find(args.vs)
+        log = log[log["opponent_id"] == opp]
+        if log.empty:
+            sys.exit(f"{name} has never fought {db.states[opp].name} in the UFC.")
+    _header(f"Where to watch {name}")
+    print("Full fights are on UFC Fight Pass (subscription); free fights and highlights are on the official "
+          "UFC YouTube channel.")
+    for label, url in footage.fighter_links(name).items():
+        print(f"  {label:20s} {url}")
+    for r in log.head(args.fights).itertuples():
+        _header(f"{r.date:%Y-%m-%d}  {r.result} vs {r.opponent} ({r.method}, R{_num(r.round, 0)})  {r.event}")
+        for label, url in footage.links(name, r.opponent, r.event).items():
+            print(f"  {label:15s} {url}")
+
+
 def cmd_news(args, db: Database | None = None):
     session = requests.Session()
     if args.fighter:
@@ -539,6 +562,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--min-ev", type=float, default=0.05,
                    help="minimum expected return to list as a value bet (default 0.05)")
 
+    s = sub.add_parser("footage", help="links to watch a fighter's fights (UFC YouTube, Fight Pass)")
+    s.add_argument("name")
+    s.add_argument("--vs", help="only fights against this opponent")
+    s.add_argument("--fights", type=int, default=10)
+
     s = sub.add_parser("news", help="latest UFC headlines, or one fighter's recent news with red flags")
     s.add_argument("fighter", nargs="?")
     s.add_argument("--days", type=int, default=30)
@@ -579,7 +607,7 @@ def main(argv=None):
         db = Database()
         handler = {"search": cmd_search, "fighter": cmd_fighter, "matchup": cmd_matchup,
                    "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event,
-                   "upcoming": cmd_upcoming, "news": cmd_news}[args.command]
+                   "upcoming": cmd_upcoming, "news": cmd_news, "footage": cmd_footage}[args.command]
         handler(args, db)
     except (LookupError_, FileNotFoundError, ValueError) as e:
         sys.exit(str(e))
