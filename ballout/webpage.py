@@ -88,6 +88,28 @@ a { color: var(--accent); text-decoration: none; } a:active { opacity: .6; }
 .kv div span:first-child { color: var(--muted); }
 .big { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log { background: var(--surface2); border-radius: 10px; padding: 10px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 220px; overflow-y: auto; white-space: pre-wrap; margin-top: 10px; }
+.welcome { max-width: 560px; margin: 8vh auto 0; text-align: center; }
+.welcome .logo { width: 72px; height: 72px; border-radius: 18px; }
+.welcome h2 { font-size: 26px; margin: 16px 0 8px; letter-spacing: -0.02em; }
+.welcome p { color: var(--muted); }
+.welcome ul { text-align: left; color: var(--muted); font-size: 14px; padding-left: 20px; }
+body.setup nav, body.setup header input, body.setup header .muted { display: none; }
+body.setup main { padding-bottom: 24px; }
+.url { font: 600 17px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: all; word-break: break-all; }
+@media (min-width: 900px) {
+  header { padding-left: 24px; padding-right: 24px; }
+  nav { top: 0; bottom: 0; right: auto; width: 200px; flex-direction: column; justify-content: flex-start; gap: 2px;
+    border-top: 0; border-right: 1px solid var(--line); padding: 72px 10px 16px; }
+  nav button { flex: 0 0 auto; flex-direction: row; gap: 10px; font-size: 15px; padding: 10px 12px; border-radius: 10px; justify-content: flex-start; }
+  nav button.on { background: var(--surface2); }
+  nav button svg { width: 20px; height: 20px; }
+  header { z-index: 6; }
+  main { margin-left: 200px; max-width: 980px; padding: 20px 28px 32px; }
+  body.setup main { margin-left: auto; }
+  .card { padding: 18px; }
+}
 </style>
 </head>
 <body>
@@ -147,6 +169,40 @@ a { color: var(--accent); text-decoration: none; } a:active { opacity: .6; }
     </div>
   </section>
 
+  <section id="tab-settings">
+    <div class="card">
+      <div class="between"><h2>Data</h2><button class="btn small" id="s-update">Update data</button></div>
+      <div id="s-data" class="small muted">Loading…</div>
+      <div id="s-log" class="log" hidden></div>
+    </div>
+    <div class="card">
+      <div class="between"><h2>Use it on your iPhone</h2><button class="btn small ghost" id="s-phone" hidden>Turn on</button></div>
+      <div id="s-phone-out" class="small"></div>
+    </div>
+    <div class="card small muted">
+      <h2 style="color:var(--text)">About</h2>
+      Fight data: ufcstats.com (via Greco1899/scrape_ufc_stats). Odds: BestFightOdds and jansen88/ufc-data.
+      News: Google News, ESPN, Sherdog. Estimates, not certainties - bet only what you can afford to lose.
+      If gambling stops being fun, call 1-800-GAMBLER.
+    </div>
+  </section>
+
+  <section id="tab-welcome">
+    <div class="welcome">
+      <img class="logo" src="/icon.png" alt="">
+      <h2>Welcome to Ball Out Gamba</h2>
+      <p>First, download the fight data: every UFC fight since 1994, round-by-round stats and betting lines
+        since 2014. It takes about 10 minutes the first time and a few seconds after that.</p>
+      <ul>
+        <li>Live odds from every major sportsbook for upcoming cards, with value bets</li>
+        <li>Matchup breakdowns, fighter profiles and links to watch their fights</li>
+        <li>News checks for injuries, replacements and missed weight</li>
+      </ul>
+      <button class="btn" id="w-go" style="margin-top:8px">Download fight data</button>
+      <div id="w-log" class="log" hidden style="text-align:left"></div>
+    </div>
+  </section>
+
   <section id="tab-news">
     <div class="card">
       <h2>News</h2>
@@ -164,6 +220,7 @@ a { color: var(--accent); text-decoration: none; } a:active { opacity: .6; }
   <button data-tab="matchup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7" cy="12" r="4"/><circle cx="17" cy="12" r="4"/></svg>Matchup</button>
   <button data-tab="fighters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Fighters</button>
   <button data-tab="news"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h10M7 17h6"/></svg>News</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
 </nav>
 
 <script>
@@ -182,6 +239,7 @@ async function api(path, params = {}) {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null));
   const r = await fetch(`/api/${path}?${q}`);
   const j = await r.json();
+  if (j && j.no_data) { show('welcome'); throw new Error(j.error); }
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
@@ -195,9 +253,11 @@ const watchLinks = w => `<div class="links">${Object.entries(w).map(([k, u]) => 
 
 // ---- tabs ----------------------------------------------------------------
 function show(tab) {
+  document.body.classList.toggle('setup', tab === 'welcome');
   document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === 'tab-' + tab));
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  store.set('tab', tab);
+  if (tab !== 'welcome') store.set('tab', tab);
+  if (tab === 'settings') loadSettings();
   window.scrollTo(0, 0);
   if (tab === 'cards' && !$('#cards-out').dataset.loaded) loadCards();
   if (tab === 'news' && !$('#n-out').innerHTML) loadNews();
@@ -431,7 +491,97 @@ async function loadNews() {
   } catch (e) { fail(out, e); }
 }
 
-show(store.get('tab', 'cards'));
+// ---- data, updates, phone access ---------------------------------------------
+let pollTimer = null;
+function followUpdate(logEl, onDone) {
+  let next = 0;
+  logEl.hidden = false;
+  clearInterval(pollTimer);
+  const tick = async () => {
+    try {
+      const j = await api('update_status', {since: next});
+      next = j.next;
+      if (j.lines.length) { logEl.textContent += j.lines.join('\n') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+      if (j.state !== 'running') {
+        clearInterval(pollTimer);
+        logEl.textContent += j.state === 'done' ? '\nAll set.\n' : `\nFailed: ${j.error}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+        onDone(j.state === 'done');
+      }
+    } catch (e) {}
+  };
+  pollTimer = setInterval(tick, 1000);
+  tick();
+}
+function resetLoaded() {
+  delete $('#cards-out').dataset.loaded;
+  ['#cards-out', '#m-out', '#f-out', '#l-out', '#n-out'].forEach(s => $(s).innerHTML = '');
+}
+$('#w-go').onclick = async () => {
+  $('#w-go').disabled = true; $('#w-go').textContent = 'Downloading… (about 10 minutes)';
+  try { await api('update'); } catch (e) {}
+  followUpdate($('#w-log'), ok => {
+    if (ok) { resetLoaded(); show('cards'); }
+    else { $('#w-go').disabled = false; $('#w-go').textContent = 'Try again'; }
+  });
+};
+$('#s-update').onclick = async () => {
+  $('#s-update').disabled = true; $('#s-update').textContent = 'Updating…';
+  $('#s-log').textContent = '';
+  try { await api('update'); } catch (e) {}
+  followUpdate($('#s-log'), ok => {
+    $('#s-update').disabled = false; $('#s-update').textContent = 'Update data';
+    if (ok) resetLoaded();
+    loadSettings();
+  });
+};
+async function loadSettings() {
+  try {
+    const s = await api('status');
+    const when = s.updated_at ? new Date(s.updated_at).toLocaleString() : 'never';
+    $('#s-data').innerHTML = s.has_data
+      ? `${(s.fights ?? 0).toLocaleString()} fights and ${(s.fighters ?? 0).toLocaleString()} fighters, ${day(s.first_event)} to ${day(s.latest_event)}.<br>Last updated ${esc(when)}. Update after each event for the newest results.<br><span class="tiny">Stored in ${esc(s.data_dir)}</span>`
+      : 'No data yet.';
+    if (s.job.state === 'running' && $('#s-log').hidden) {
+      $('#s-update').disabled = true; $('#s-update').textContent = 'Updating…';
+      followUpdate($('#s-log'), () => { $('#s-update').disabled = false; $('#s-update').textContent = 'Update data'; loadSettings(); });
+    }
+    renderPhone(s.desktop, s.phone);
+  } catch (e) { $('#s-data').textContent = e.message; }
+}
+function renderPhone(desktop, phone) {
+  const btn = $('#s-phone'), out = $('#s-phone-out');
+  btn.hidden = !desktop;
+  btn.textContent = phone.enabled ? 'Turn off' : 'Turn on';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { const p = await api('phone', {enable: phone.enabled ? 0 : 1}); renderPhone(desktop, p); }
+    catch (e) { out.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    btn.disabled = false;
+  };
+  if (phone.enabled && phone.url) {
+    out.innerHTML = `<p style="margin:4px 0 8px">On your iPhone (same Wi-Fi), open this address in Safari:</p>
+      <div class="url">${esc(phone.url)}</div>
+      <p class="muted tiny" style="margin:8px 0 0">Then tap Share → Add to Home Screen. ${desktop ? 'Keep this app open while you use it. Anyone on your network with the address can open it.' : ''}</p>`;
+  } else if (desktop) {
+    out.innerHTML = `<p class="muted" style="margin:4px 0 0">Turn on to open the same app on your iPhone over Wi-Fi.</p>`;
+  } else {
+    out.innerHTML = `<p class="muted" style="margin:4px 0 0">Tap Share → Add to Home Screen to keep it on your phone.</p>`;
+  }
+}
+
+(async () => {
+  try {
+    const s = await api('status');
+    if (!s.has_data) {
+      show('welcome');
+      if (s.job.state === 'running') { $('#w-go').disabled = true; $('#w-go').textContent = 'Downloading… (about 10 minutes)';
+        followUpdate($('#w-log'), ok => { if (ok) { resetLoaded(); show('cards'); } }); }
+      return;
+    }
+  } catch (e) {}
+  show(store.get('tab', 'cards'));
+})();
 </script>
 </body>
 </html>

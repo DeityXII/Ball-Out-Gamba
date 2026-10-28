@@ -29,24 +29,43 @@ event since 2023, one page per second. Later runs only fetch new events and take
 the latest results. (Or `pip install -e .`
 and use the `ballout` command instead of `python -m ballout`.)
 
-## Portable program (no Python needed)
+## Desktop app and portable programs (no Python needed)
 
-Ready-made single-file programs for **Windows** (`ballout-windows.exe`), **macOS**
-(`ballout-macos`, Apple Silicon) and **Linux** (`ballout-linux`) are built automatically
-by GitHub Actions. Download them from the repo's **Actions** tab (latest "Build
-executables" run → Artifacts), or from **Releases** once a version tag such as `v1.0`
-is pushed.
+Download from the [latest release](https://github.com/DeityXII/Ball-Out-Gamba/releases/latest):
 
-- Put the file in any folder, even a USB stick, and run it. It keeps its data in a
-  `ballout-data` folder right next to itself.
-- Double-clicking it opens a prompt: type `update` the first time (about 10 minutes),
-  then commands like `upcoming --news` or `matchup "Ilia Topuria" "Islam Makhachev" --live`.
-  Typing `web` starts the phone app.
-- The programs aren't code-signed, so Windows SmartScreen will warn "unknown publisher"
-  (click **More info → Run anyway**). On macOS, right-click → **Open** the first time, or
-  run `xattr -d com.apple.quarantine ballout-macos`.
-- To build one yourself: `pip install pyinstaller && python packaging/build.py` (it builds
-  for the OS you run it on).
+| file | what it is |
+|---|---|
+| `BallOutGamba-windows.exe` | **The desktop app for Windows**: double-click and it opens in its own window |
+| `ballout-windows.exe` | the command-line version for Windows |
+| `ballout-macos` | command-line version for macOS (Apple Silicon) |
+| `ballout-linux` | command-line version for Linux |
+
+**The desktop app** has the same interface as the phone app, in a normal window: upcoming
+cards with live odds and value bets, matchups, fighter profiles with watch links, and news.
+On wide windows the tabs move into a sidebar.
+
+- On first launch it shows a welcome screen. Click **Download fight data** and watch the
+  progress (about 10 minutes, once).
+- **Settings → Update data** refreshes everything after each event.
+- **Settings → Use it on your iPhone → Turn on** shares the app over Wi-Fi and shows the
+  address to open in Safari on your phone.
+- It uses the Edge WebView2 engine built into Windows 10 and 11. Links to fight videos and
+  news open in your normal browser.
+
+Both Windows programs are portable: put them in any folder, even a USB stick. They keep
+their data in a `ballout-data` folder right next to themselves (and share it if they're in
+the same folder). Double-clicking the command-line version opens a prompt where you type
+commands like `update`, `upcoming --news` or `web`.
+
+The programs aren't code-signed, so Windows SmartScreen will warn "unknown publisher"
+(click **More info → Run anyway**). On macOS, right-click → **Open** the first time, or run
+`xattr -d com.apple.quarantine ballout-macos`.
+
+GitHub Actions builds these automatically. To publish a new version, push a tag such as
+`v1.1`, or run **Actions → Build executables → Run workflow** with a release tag. To build
+one yourself, run `pip install pyinstaller` then `python packaging/build.py`. For the desktop
+app, run `pip install -r requirements-desktop.txt` then `python packaging/build.py --gui`.
+From source, `python -m ballout app` opens the desktop app (it needs pywebview).
 
 ## On your iPhone
 
@@ -99,6 +118,7 @@ The CSVs open directly in Excel / Google Sheets / pandas if you want to dig your
 ## Commands
 
 ```bash
+python -m ballout app                                      # desktop app window (needs pywebview)
 python -m ballout web                                      # phone app (see "On your iPhone")
 python -m ballout upcoming                                 # every upcoming UFC card, live odds
 python -m ballout upcoming --event "UFC 334" --news --bankroll 500

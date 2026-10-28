@@ -548,6 +548,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--min-ev", type=float, default=0.05,
                    help="minimum expected return to list as a value bet (default 0.05)")
 
+    s = sub.add_parser("app", help="desktop app in its own window (needs: pip install pywebview)")
+
     s = sub.add_parser("web", help="phone-friendly web app (open it on your iPhone over Wi-Fi)")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--host", default="0.0.0.0", help="use 127.0.0.1 to allow this computer only")
@@ -611,6 +613,9 @@ def run(argv=None):
         if args.command == "web":
             from . import web
             return web.serve(args.host, args.port, args.open)
+        if args.command == "app":
+            from . import desktop
+            return desktop.run()
         db = _database()
         handler = {"search": cmd_search, "fighter": cmd_fighter, "matchup": cmd_matchup,
                    "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event,

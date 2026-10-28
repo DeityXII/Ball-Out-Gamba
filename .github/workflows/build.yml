@@ -8,7 +8,7 @@ on:
   push:
     tags: ["v*"]
     branches: ["main", "master", "claude/**"]
-    paths: ["ballout/**", "packaging/**", "tests/**", "requirements.txt", ".github/workflows/build.yml"]
+    paths: ["ballout/**", "packaging/**", "tests/**", "requirements*.txt", ".github/workflows/build.yml"]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -28,6 +28,7 @@ jobs:
           - os: windows-latest
             binary: dist/ballout.exe
             asset: ballout-windows.exe
+            gui_asset: BallOutGamba-windows.exe
           - os: macos-latest
             binary: dist/ballout
             asset: ballout-macos
@@ -47,6 +48,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Install desktop-app dependencies
+        if: matrix.gui_asset
+        run: pip install -r requirements-desktop.txt
+
       - name: Unit tests
         run: python -m unittest -v
 
@@ -59,14 +64,38 @@ jobs:
           ${{ matrix.binary }} --help
           printf 'help\nquit\n' | ${{ matrix.binary }}
 
+      - name: Build desktop app
+        if: matrix.gui_asset
+        run: python packaging/build.py --gui
+
+      - name: Desktop app self-test (opens the window, checks the page rendered)
+        if: matrix.gui_asset
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "selftest.txt"
+          $p = Start-Process -FilePath "dist\BallOutGamba.exe" -ArgumentList "--selftest", "`"$out`"" -PassThru
+          if (-not $p.WaitForExit(240000)) { $p.Kill(); throw "desktop app self-test timed out" }
+          if (-not (Test-Path $out)) { throw "desktop app wrote no self-test result (exit code $($p.ExitCode))" }
+          $result = Get-Content $out -Raw
+          Write-Host $result
+          if ($result -notmatch '^OK') { throw "desktop app self-test failed" }
+
       - name: Rename
         shell: bash
-        run: mv ${{ matrix.binary }} dist/${{ matrix.asset }}
+        run: |
+          mv ${{ matrix.binary }} dist/${{ matrix.asset }}
+          if [ -n "${{ matrix.gui_asset }}" ]; then mv dist/BallOutGamba.exe dist/${{ matrix.gui_asset }}; fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.gui_asset
+        with:
+          name: ${{ matrix.gui_asset }}
+          path: dist/${{ matrix.gui_asset }}
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
@@ -75,4 +104,6 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
           target_commitish: ${{ github.sha }}
           name: Ball Out Gamba ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
-          files: dist/${{ matrix.asset }}
+          files: |
+            dist/${{ matrix.asset }}
+            ${{ matrix.gui_asset && format('dist/{0}', matrix.gui_asset) || '' }}

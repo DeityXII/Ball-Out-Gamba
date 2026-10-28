@@ -32,3 +32,24 @@ class WebTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhoneAccessTests(unittest.TestCase):
+    def test_desktop_phone_server_toggles(self):
+        import urllib.request
+        app = web.App(desktop=True, phone_port=18765)
+        on = app.phone("1")
+        self.assertTrue(on["enabled"])
+        port = app.phone_server.server_address[1]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/manifest.webmanifest", timeout=10) as r:
+            self.assertEqual(json.loads(r.read())["name"], "Ball Out Gamba")
+        self.assertEqual(app.phone("1")["url"], on["url"])  # idempotent
+        self.assertFalse(app.phone("0")["enabled"])
+        self.assertIsNone(app.phone_server)
+
+    def test_line_writer_collects_progress(self):
+        lines = []
+        w = web._LineWriter(lines)
+        w.write("Downloading...\n  part")
+        w.write("ial line\n\n")
+        self.assertEqual(lines, ["Downloading...", "  partial line"])
