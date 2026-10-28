@@ -1,8 +1,9 @@
 """Analyse upcoming UFC cards straight from live sportsbook lines.
 
-For every scheduled fight: the market's consensus probability, our stats
-model, the model+market blend, the best price on each fighter (and which
-book has it), expected value and stake at that price, the market's
+For every scheduled fight: the market's consensus probability (all
+sportsbooks), our stats model, the model+market blend, the best price on each
+fighter among the sportsbooks you chose in Settings (and which book has it),
+every chosen book's line, expected value and stake at the best price, the market's
 method-of-victory and goes-the-distance probabilities from the props, line
 movement since we first saw the fight, and optional news flags.
 """
@@ -15,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from . import bfo, config, market, news, odds
+from . import bfo, config, market, news, odds, settings
 from .analysis import Database
 
 SNAPSHOTS = "odds_snapshots.csv"
@@ -57,7 +58,9 @@ def _snapshot_locked(events: list[dict]) -> pd.DataFrame:
 
 def analyse(db: Database, event_filter: str | None = None, include_unscheduled: bool = False,
             with_news: bool = False, news_days: int = 21, bankroll: float | None = None,
-            kelly_mult: float = 0.25, max_stake: float = 0.05, verbose: bool = True) -> list[EventAnalysis]:
+            kelly_mult: float = 0.25, max_stake: float = 0.05, verbose: bool = True,
+            books: list[str] | None = None) -> list[EventAnalysis]:
+    books = books or settings.books()
     events = bfo.upcoming(include_unscheduled=include_unscheduled)
     if event_filter:
         q = event_filter.lower()
@@ -75,11 +78,15 @@ def analyse(db: Database, event_filter: str | None = None, include_unscheduled: 
             a_id, b_id = db.find_strict(c.fighter1), db.find_strict(c.fighter2)
             if unscheduled and not (a_id and b_id):
                 continue  # the undated page mixes promotions; keep UFC-vs-UFC only
+            mine = bfo.best_prices(ev["book_lines"][ev["book_lines"]["matchup_id"] == c.matchup_id], books)
             rec = {"matchup_id": c.matchup_id, "fighter1": c.fighter1, "fighter2": c.fighter2,
                    "p1_market": c.p1_market, "books": c.books,
-                   "dec1_best": c.dec1_best, "book1_best": c.book1_best,
-                   "dec2_best": c.dec2_best, "book2_best": c.book2_best,
+                   "dec1_best": mine["dec1"], "book1_best": mine["book1"],
+                   "dec2_best": mine["dec2"], "book2_best": mine["book2"],
+                   "lines": {b: list(v) for b, v in mine["lines"].items()},
                    "dec1_median": c.dec1_median, "dec2_median": c.dec2_median, "notes": []}
+            if not mine["lines"]:
+                rec["notes"].append("None of your chosen sportsbooks has posted this fight yet.")
             p1_model = np.nan
             if a_id and b_id and a_id != b_id:
                 pred = db.predict(a_id, b_id, date)
@@ -93,7 +100,7 @@ def analyse(db: Database, event_filter: str | None = None, include_unscheduled: 
                 rec["p1_est"] = float(market.blend(p1_model, c.p1_market, weights))
             else:
                 rec["p1_est"] = c.p1_market
-            for side, p, dec in (("1", rec["p1_est"], c.dec1_best), ("2", 1 - rec["p1_est"], c.dec2_best)):
+            for side, p, dec in (("1", rec["p1_est"], rec["dec1_best"]), ("2", 1 - rec["p1_est"], rec["dec2_best"])):
                 rec[f"ev{side}"] = odds.expected_value(p, dec)
                 k = min(odds.kelly_fraction(p, dec) * kelly_mult, max_stake)
                 rec[f"kelly{side}"] = k
@@ -156,18 +163,23 @@ def value_bets(analyses: list[EventAnalysis], min_ev: float = 0.05) -> pd.DataFr
     return pd.DataFrame(rows).sort_values("EV", ascending=False) if rows else pd.DataFrame()
 
 
-def live_odds_for(db: Database, a_id: str, b_id: str):
-    """Best current prices for a matchup if it's on an upcoming card, else None.
+def live_odds_for(db: Database, a_id: str, b_id: str, books: list[str] | None = None):
+    """Best current prices (among the chosen sportsbooks) for a matchup if it's
+    on an upcoming card, else None.
 
     Returns (event name, event date, best price for a, best price for b,
-    (book for a, book for b), number of books)."""
+    (book for a, book for b), number of chosen books with a line)."""
+    books = books or settings.books()
     for ev in bfo.upcoming(include_unscheduled=True):
         for c in ev["consensus"].itertuples(index=False):
             ids = (db.find_strict(c.fighter1), db.find_strict(c.fighter2))
             if set(ids) == {a_id, b_id}:
+                mine = bfo.best_prices(ev["book_lines"][ev["book_lines"]["matchup_id"] == c.matchup_id], books)
+                if not mine["lines"]:
+                    return None
                 straight = ids[0] == a_id
-                pa = c.dec1_best if straight else c.dec2_best
-                pb = c.dec2_best if straight else c.dec1_best
-                books = (c.book1_best, c.book2_best) if straight else (c.book2_best, c.book1_best)
-                return ev["name"], ev["date"], pa, pb, books, c.books
+                pa = mine["dec1"] if straight else mine["dec2"]
+                pb = mine["dec2"] if straight else mine["dec1"]
+                bks = (mine["book1"], mine["book2"]) if straight else (mine["book2"], mine["book1"])
+                return ev["name"], ev["date"], pa, pb, bks, len(mine["lines"])
     return None

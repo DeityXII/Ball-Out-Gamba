@@ -25,7 +25,7 @@ def parse_odds(value) -> float:
 
 
 def decimal_to_american(dec: float) -> str:
-    if dec <= 1:
+    if dec is None or math.isnan(dec) or dec <= 1:
         return "n/a"
     if dec >= 2:
         return f"+{round((dec - 1) * 100)}"

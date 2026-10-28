@@ -204,6 +204,40 @@ def consensus(lines: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def book_lines(lines: pd.DataFrame) -> pd.DataFrame:
+    """Every book's current price on both fighters, one row per matchup and book.
+
+    Columns: matchup_id, book, dec1, dec2. Quotes with an implausible margin
+    (stale or broken) are dropped; prediction markets are kept so they can be
+    chosen in Settings."""
+    rows = []
+    for mu, grp in lines.groupby("matchup_id"):
+        wide = grp.pivot_table(index="book", columns="side", values="dec", aggfunc="last")
+        if 1 not in wide or 2 not in wide:
+            continue
+        both = wide.dropna()
+        over = 1 / both[1] + 1 / both[2] - 1
+        for book, r in both[(over > -0.01) & (over < 0.15)].iterrows():
+            rows.append({"matchup_id": int(mu), "book": book, "dec1": float(r[1]), "dec2": float(r[2])})
+    return pd.DataFrame(rows, columns=["matchup_id", "book", "dec1", "dec2"])
+
+
+def best_prices(book_rows: pd.DataFrame, books: list[str]) -> dict:
+    """Best price on each fighter among the chosen books (case-insensitive).
+
+    -> {"dec1", "book1", "dec2", "book2", "lines": {book: (dec1, dec2)}}; prices
+    are NaN when none of the chosen books has posted the fight."""
+    wanted = {b.lower() for b in books}
+    mine = book_rows[book_rows["book"].str.lower().isin(wanted)]
+    out = {"dec1": float("nan"), "book1": None, "dec2": float("nan"), "book2": None,
+           "lines": {r.book: (r.dec1, r.dec2) for r in mine.itertuples()}}
+    if len(mine):
+        i1, i2 = mine["dec1"].idxmax(), mine["dec2"].idxmax()
+        out.update(dec1=float(mine.at[i1, "dec1"]), book1=mine.at[i1, "book"],
+                   dec2=float(mine.at[i2, "dec2"]), book2=mine.at[i2, "book"])
+    return out
+
+
 def prop_consensus(props: pd.DataFrame) -> pd.DataFrame:
     """Per matchup, the market's view of how the fight ends.
 
@@ -328,6 +362,7 @@ def upcoming(include_unscheduled: bool = True) -> list[dict]:
         parsed = fetch_event(session, ev, use_cache=False)
         parsed.update({"date": ev.date, "url": ev.url,
                        "consensus": consensus(parsed["lines"]),
+                       "book_lines": book_lines(parsed["lines"]),
                        "prop_consensus": prop_consensus(parsed["props"])})
         if pd.isna(ev.date):
             parsed["name"] = "Announced fights without a date (all promotions)"

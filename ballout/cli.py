@@ -10,7 +10,7 @@ import pandas as pd
 
 import requests
 
-from . import bfo, config, data, features, footage, market, model, news, odds, upcoming
+from . import bfo, config, data, features, footage, market, model, news, odds, settings, upcoming
 from .analysis import Database, LookupError_
 
 pd.set_option("display.width", 200)
@@ -318,8 +318,10 @@ def cmd_card(args, db: Database):
 
 def cmd_upcoming(args, db: Database):
     print("Fetching live lines from BestFightOdds...")
+    books = [b.strip() for b in args.books.split(",")] if args.books else settings.books()
+    print(f"Best prices from: {', '.join(books)}  (change with `books`)")
     analyses = upcoming.analyse(db, args.event, args.unscheduled, args.news, args.news_days,
-                                args.bankroll, args.kelly, MAX_STAKE)
+                                args.bankroll, args.kelly, MAX_STAKE, books=books)
     if not analyses:
         print("No upcoming UFC events found" + (f" matching '{args.event}'." if args.event else "."))
         return
@@ -335,9 +337,10 @@ def cmd_upcoming(args, db: Database):
             "market": [f"{_pct(p, 0)} / {_pct(1 - p, 0)}" for p in f["p1_market"]],
             "model": [f"{_pct(p, 0)} / {_pct(1 - p, 0)}" if not pd.isna(p) else "no data" for p in f["p1_model"]],
             "ours": [f"{_pct(p, 1)} / {_pct(1 - p, 1)}" for p in f["p1_est"]],
-            "best prices": [f"{odds.decimal_to_american(a)} {ba} / {odds.decimal_to_american(b)} {bb}"
+            "best prices": [f"{odds.decimal_to_american(a)} {ba or ''} / {odds.decimal_to_american(b)} {bb or ''}"
                             for a, ba, b, bb in zip(f["dec1_best"], f["book1_best"], f["dec2_best"], f["book2_best"])],
-            "EV": [f"{e1:+.0%} / {e2:+.0%}" for e1, e2 in zip(f["ev1"], f["ev2"])],
+            "EV": [("-" if pd.isna(e1) else f"{e1:+.0%}") + " / " + ("-" if pd.isna(e2) else f"{e2:+.0%}")
+                   for e1, e2 in zip(f["ev1"], f["ev2"])],
             "moved": [("-" if pd.isna(m) else f"{m * 100:+.1f}") for m in f["move"]],
         })
         print(show.to_string(index=False))
@@ -411,6 +414,21 @@ def cmd_footage(args, db: Database):
         _header(f"{r.date:%Y-%m-%d}  {r.result} vs {r.opponent} ({r.method}, R{_num(r.round, 0)})  {r.event}")
         for label, url in footage.links(name, r.opponent, r.event).items():
             print(f"  {label:15s} {url}")
+
+
+def cmd_books(args):
+    if args.reset:
+        chosen = settings.set_books(None)
+    elif args.names:
+        chosen = settings.set_books(args.names)
+    else:
+        chosen = settings.books()
+    print("Best prices, expected return and value bets use: " + ", ".join(chosen))
+    others = [b for b in settings.SPORTSBOOKS + settings.PREDICTION_MARKETS if b not in chosen]
+    if others:
+        print("Not used: " + ", ".join(others))
+    print("Change with e.g. `books FanDuel DraftKings`, or `books --reset` for every sportsbook. "
+          "The market % always uses every sportsbook.")
 
 
 def cmd_news(args, db: Database | None = None):
@@ -548,6 +566,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--min-ev", type=float, default=0.05,
                    help="minimum expected return to list as a value bet (default 0.05)")
 
+    s.add_argument("--books", help="just for this run, e.g. \"FanDuel,DraftKings\" (default: your saved choice)")
+
+    s = sub.add_parser("books", help="choose which sportsbooks' odds to use (saved; shared with the apps)")
+    s.add_argument("names", nargs="*", help="e.g. FanDuel DraftKings BetMGM")
+    s.add_argument("--reset", action="store_true", help="go back to every sportsbook")
+
     s = sub.add_parser("app", help="desktop app in its own window (needs: pip install pywebview)")
 
     s = sub.add_parser("web", help="phone-friendly web app (open it on your iPhone over Wi-Fi)")
@@ -610,6 +634,8 @@ def run(argv=None):
             return cmd_backtest(args)
         if args.command == "news" and not args.fighter:
             return cmd_news(args)
+        if args.command == "books":
+            return cmd_books(args)
         if args.command == "web":
             from . import web
             return web.serve(args.host, args.port, args.open)

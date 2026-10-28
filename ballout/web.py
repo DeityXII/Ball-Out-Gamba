@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 import pandas as pd
 
-from . import config, footage, news, odds, upcoming
+from . import config, footage, news, odds, settings, upcoming
 from .analysis import Database, LookupError_
 from .webpage import INDEX_HTML
 
@@ -195,6 +195,17 @@ class App:
             self.phone_server, self.phone_url = None, None
         return {"enabled": self.phone_server is not None, "url": self.phone_url}
 
+    def prefs(self, books: str | None = None, reset: str = "") -> dict:
+        """Read or save the sportsbooks used for best prices, EV and value bets."""
+        if reset == "1":
+            settings.set_books(None)
+        elif books is not None:
+            settings.set_books([b for b in books.split(",") if b.strip()])
+        chosen = settings.books()
+        known = settings.SPORTSBOOKS + settings.PREDICTION_MARKETS
+        return {"books": chosen, "sportsbooks": settings.SPORTSBOOKS + [b for b in chosen if b not in known],
+                "prediction_markets": settings.PREDICTION_MARKETS}
+
     # ---- endpoints -----------------------------------------------------
     def search(self, q: str = "") -> list:
         if len(q.strip()) < 2:
@@ -243,7 +254,9 @@ class App:
         live_info = None
         date = None
         if live == "1" and not (odds_a and odds_b):
-            found = self._cached(("live", a_id, b_id), 300, lambda: upcoming.live_odds_for(db, a_id, b_id))
+            books = settings.books()
+            found = self._cached(("live", a_id, b_id, tuple(books)), 300,
+                                 lambda: upcoming.live_odds_for(db, a_id, b_id, books))
             if found:
                 ev_name, ev_date, oa, ob, books, n = found
                 odds_a, odds_b, date = oa, ob, ev_date
@@ -270,9 +283,10 @@ class App:
 
     def upcoming(self, news: str = "", unscheduled: str = "", min_ev: str = "0.05") -> dict:
         with_news, with_unsched = news == "1", unscheduled == "1"
+        books = settings.books()
 
         def run():
-            analyses = upcoming.analyse(self.db, None, with_unsched, with_news, verbose=False)
+            analyses = upcoming.analyse(self.db, None, with_unsched, with_news, verbose=False, books=books)
             return {
                 "fetched_at": pd.Timestamp.now(),
                 "events": [{
@@ -280,8 +294,9 @@ class App:
                     "news": {k: [_headline(h) for h in v] for k, v in ea.news.items()},
                 } for ea in analyses],
                 "value_bets": upcoming.value_bets(analyses, 0.0),
+                "chosen_books": books,
             }
-        data = self._cached(("upcoming", with_news, with_unsched), 600 if with_news else 300, run)
+        data = self._cached(("upcoming", with_news, with_unsched, tuple(books)), 600 if with_news else 300, run)
         data = dict(data)
         vb = data["value_bets"]
         data["value_bets"] = vb[vb["EV"] >= float(min_ev)] if len(vb) else vb
@@ -336,7 +351,7 @@ def make_handler(app: App):
     routes = {"search": app.search, "fighter": app.fighter, "matchup": app.matchup,
               "upcoming": app.upcoming, "news": app.news, "leaders": app.leaders,
               "status": app.status, "update": app.update, "update_status": app.update_status,
-              "phone": app.phone}
+              "phone": app.phone, "settings": app.prefs}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ballout"

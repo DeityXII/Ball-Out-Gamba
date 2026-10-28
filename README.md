@@ -122,6 +122,7 @@ python -m ballout app                                      # desktop app window 
 python -m ballout web                                      # phone app (see "On your iPhone")
 python -m ballout upcoming                                 # every upcoming UFC card, live odds
 python -m ballout upcoming --event "UFC 334" --news --bankroll 500
+python -m ballout books FanDuel DraftKings                  # only use the books you bet with
 python -m ballout news "Amanda Nunes"                      # recent headlines + red flags
 python -m ballout news                                     # latest UFC headlines
 python -m ballout fighter "Islam Makhachev"                # profile + last 10 fights
@@ -161,6 +162,16 @@ subscription) and a general YouTube search.
   fighter, taken from the sportsbooks' prop bets;
 - a **value bets** list: sides with at least `--min-ev` expected return (default 5%) at the
   best available price. A price far above every other book's is flagged as possibly stale.
+
+**Choose your sportsbooks.** In the app go to **Settings → Sportsbooks**. On the command
+line, run `python -m ballout books FanDuel DraftKings` (`books --reset` goes back to all of
+them). Best prices, expected return, stakes and value bets then come only from the books
+you bet with, and each fight gets a "Your books' lines" list showing all their prices. The
+market % still uses every sportsbook, because their consensus is the most accurate
+probability. Prediction markets (Polymarket, Kalshi) are listed separately and are off by
+default because their prices can be thin. The choice is saved in the data folder, so the
+desktop app, the phone and the command line share it. `upcoming --books "FanDuel,BetMGM"`
+overrides it for a single run.
 
 Add `--news` to scan every fighter's last three weeks of headlines for injury, withdrawal,
 weight and suspension red flags. Add `--unscheduled` to include announced fights that don't

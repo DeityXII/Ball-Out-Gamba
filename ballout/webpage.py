@@ -97,6 +97,13 @@ a { color: var(--accent); text-decoration: none; } a:active { opacity: .6; }
 .welcome ul { text-align: left; color: var(--muted); font-size: 14px; padding-left: 20px; }
 body.setup nav, body.setup header input, body.setup header .muted { display: none; }
 body.setup main { padding-bottom: 24px; }
+.bookgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px 12px; }
+.bookgrid label { display: flex; gap: 8px; align-items: center; padding: 6px 0; font-size: 15px; }
+.bookgrid label input { width: auto; }
+details.lines { margin-top: 4px; } details.lines summary { cursor: pointer; list-style: none; }
+details.lines summary::-webkit-details-marker { display: none; }
+details.lines summary::before { content: "▸ "; } details.lines[open] summary::before { content: "▾ "; }
+details.lines table { margin-top: 4px; max-width: 420px; }
 .url { font: 600 17px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: all; word-break: break-all; }
 @media (min-width: 900px) {
   header { padding-left: 24px; padding-right: 24px; }
@@ -126,8 +133,8 @@ body.setup main { padding-bottom: 24px; }
         <label class="check"><input type="checkbox" id="opt-news"> Check fighter news</label>
         <label class="check"><input type="checkbox" id="opt-unsched"> Include undated fights</label>
       </div>
-      <p class="muted tiny" style="margin:8px 0 0">Live lines from FanDuel, DraftKings, BetMGM, Caesars and more via
-        BestFightOdds. "Ours" blends the stats model with the market. Value = 5%+ expected return at the best price.</p>
+      <p class="muted tiny" style="margin:8px 0 0">Live lines via BestFightOdds. Best prices come from the sportsbooks you
+        picked in Settings. "Ours" blends the stats model with the market. Value = 5%+ expected return at your best price.</p>
     </div>
     <div id="cards-out"></div>
   </section>
@@ -174,6 +181,16 @@ body.setup main { padding-bottom: 24px; }
       <div class="between"><h2>Data</h2><button class="btn small" id="s-update">Update data</button></div>
       <div id="s-data" class="small muted">Loading…</div>
       <div id="s-log" class="log" hidden></div>
+    </div>
+    <div class="card">
+      <h2>Sportsbooks</h2>
+      <p class="muted small" style="margin:2px 0 10px">Pick the books you bet with. Best prices, expected return, stakes and value
+        bets only use these. "Market %" always uses every sportsbook, because the consensus of all books is the most accurate probability.</p>
+      <div id="s-books" class="bookgrid"></div>
+      <h3>Prediction markets</h3>
+      <div id="s-markets" class="bookgrid"></div>
+      <p class="muted tiny" style="margin:6px 0 0">Prediction-market prices can be thin and jumpy, so they're off unless you pick them.</p>
+      <div class="tiny" id="s-books-msg" style="margin-top:6px"></div>
     </div>
     <div class="card">
       <div class="between"><h2>Use it on your iPhone</h2><button class="btn small ghost" id="s-phone" hidden>Turn on</button></div>
@@ -306,14 +323,21 @@ async function loadCards() {
       html += `<div class="card"><div class="between"><h2>${esc(ev.name)}</h2><span class="muted small">${ev.date ? day(ev.date) : 'date TBA'}</span></div>`;
       for (const f of ev.fights) {
         const p = f.p1_est, n1 = (ev.news || {})[f.fighter1], n2 = (ev.news || {})[f.fighter2];
-        const evPill = e => `<span class="pill ${e >= 0.05 ? 'good' : e < -0.05 ? 'bad' : ''}">${e >= 0 ? '+' : ''}${pct(e, 0)}</span>`;
+        const evPill = e => e == null ? '' : `<span class="pill ${e >= 0.05 ? 'good' : e < -0.05 ? 'bad' : ''}">${e >= 0 ? '+' : ''}${pct(e, 0)}</span>`;
+        const lines = Object.entries(f.lines || {}).sort((x, y) => x[0].localeCompare(y[0]));
+        const last = n => esc(n.split(' ').pop());
+        const cell = (d, best) => `<td>${d === best ? '<b>' + am(d) + '</b>' : am(d)}</td>`;
+        const linesHtml = lines.length ? `<details class="lines"><summary class="tiny muted">Your books' lines (${lines.length})</summary>
+          <table class="tight"><tr><th>Book</th><th>${last(f.fighter1)}</th><th>${last(f.fighter2)}</th></tr>
+          ${lines.map(([b, [d1, d2]]) => `<tr><td>${esc(b)}</td>${cell(d1, f.dec1_best)}${cell(d2, f.dec2_best)}</tr>`).join('')}</table></details>` : '';
         const props = f.p_decision != null ? `<div class="tiny muted">Market: decision ${pct(f.p_decision)} · ${esc(f.fighter1.split(' ').pop())} KO ${pct(f.p_1_KO)} SUB ${pct(f.p_1_SUB)} · ${esc(f.fighter2.split(' ').pop())} KO ${pct(f.p_2_KO)} SUB ${pct(f.p_2_SUB)}</div>` : '';
         html += `<div class="fight" data-a="${esc(f.fighter1)}" data-b="${esc(f.fighter2)}" style="cursor:pointer">
           <div class="between"><span class="name ca ellipsis">${esc(f.fighter1)}</span><span class="small">${pct(p, 1)} · ${am(f.dec1_best)} <span class="muted tiny">${esc(f.book1_best)}</span> ${evPill(f.ev1)}</span></div>
           ${bar(p)}
           <div class="between"><span class="name cb ellipsis">${esc(f.fighter2)}</span><span class="small">${pct(1 - p, 1)} · ${am(f.dec2_best)} <span class="muted tiny">${esc(f.book2_best)}</span> ${evPill(f.ev2)}</span></div>
-          <div class="tiny muted">market ${pct(f.p1_market)} · model ${f.p1_model == null ? 'no data' : pct(f.p1_model)}${f.move != null ? ` · moved ${(f.move * 100 >= 0 ? '+' : '') + (f.move * 100).toFixed(1)} pts` : ''} · ${f.books} books</div>
+          <div class="tiny muted">market ${pct(f.p1_market)} (all ${f.books} books) · model ${f.p1_model == null ? 'no data' : pct(f.p1_model)}${f.move != null ? ` · moved ${(f.move * 100 >= 0 ? '+' : '') + (f.move * 100).toFixed(1)} pts` : ''}</div>
           ${props}
+          ${linesHtml}
           ${(n1 || n2) ? `<div class="tiny">${flagPills(n1) ? esc(f.fighter1) + ': ' + flagPills(n1) : ''} ${flagPills(n2) ? esc(f.fighter2) + ': ' + flagPills(n2) : ''}</div>` : ''}
           ${(f.notes || []).map(n => `<div class="tiny muted">• ${esc(n)}</div>`).join('')}
         </div>`;
@@ -331,7 +355,10 @@ async function loadCards() {
       }
     }
     out.innerHTML = html;
-    out.querySelectorAll('.fight[data-a]').forEach(el => el.onclick = () => openMatchup(el.dataset.a, el.dataset.b));
+    out.querySelectorAll('.fight[data-a]').forEach(el => el.onclick = ev => {
+      if (ev.target.closest('details')) return;  // expanding the lines list, not opening the matchup
+      openMatchup(el.dataset.a, el.dataset.b);
+    });
   } catch (e) { fail(out, e); }
 }
 
@@ -356,7 +383,7 @@ async function runMatchup() {
       <div class="between"><span class="big ca">${pct(best, 1)}</span><span class="big cb">${pct(1 - best, 1)}</span></div>
       ${bar(best)}
       <div class="tiny muted">${pr.length && pr[0]['blend %'] != null ? `Model + market blend. Stats model alone: ${pct(d.p_a, 1)} / ${pct(1 - d.p_a, 1)}.` : 'Stats model. Add odds for both fighters (or live odds) for the market blend.'}</div>
-      ${d.live ? `<div class="tiny" style="margin-top:6px"><span class="pill">live</span> ${esc(d.live.event)} · best of ${d.live.books} books</div>` : ''}
+      ${d.live ? `<div class="tiny" style="margin-top:6px"><span class="pill">live</span> ${esc(d.live.event)} · best of your ${d.live.books} book${d.live.books === 1 ? '' : 's'}: ${esc(d.live.book_a)} / ${esc(d.live.book_b)}</div>` : ''}
     </div>`;
     if (pr.length) {
       html += `<div class="card"><h2>Betting value</h2><div class="scroll"><table class="tight"><tr><th>Fighter</th><th>Price</th><th>Ours</th><th>Mkt</th><th>EV</th><th>Stake</th></tr>`;
@@ -548,6 +575,23 @@ async function loadSettings() {
     }
     renderPhone(s.desktop, s.phone);
   } catch (e) { $('#s-data').textContent = e.message; }
+  try { renderBooks(await api('settings')); } catch (e) {}
+}
+function renderBooks(p) {
+  const chosen = new Set(p.books.map(b => b.toLowerCase()));
+  const box = name => `<label><input type="checkbox" value="${esc(name)}" ${chosen.has(name.toLowerCase()) ? 'checked' : ''}> ${esc(name)}</label>`;
+  $('#s-books').innerHTML = p.sportsbooks.map(box).join('');
+  $('#s-markets').innerHTML = p.prediction_markets.map(box).join('');
+  document.querySelectorAll('#s-books input, #s-markets input').forEach(cb => cb.onchange = async () => {
+    const picked = [...document.querySelectorAll('#s-books input:checked, #s-markets input:checked')].map(x => x.value);
+    const msg = $('#s-books-msg');
+    if (!picked.length) { cb.checked = true; msg.innerHTML = '<span class="err">Pick at least one sportsbook.</span>'; return; }
+    try {
+      await api('settings', {books: picked.join(',')});
+      delete $('#cards-out').dataset.loaded;
+      msg.innerHTML = `<span class="pill good">Saved</span> <span class="muted">Cards and matchups now use ${picked.length} book${picked.length === 1 ? '' : 's'}.</span>`;
+    } catch (e) { msg.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  });
 }
 function renderPhone(desktop, phone) {
   const btn = $('#s-phone'), out = $('#s-phone-out');
