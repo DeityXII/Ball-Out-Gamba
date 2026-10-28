@@ -586,10 +586,23 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv=None):
+_db: Database | None = None
+
+
+def _database() -> Database:
+    """Load once per process (the interactive prompt runs many commands)."""
+    global _db
+    if _db is None:
+        _db = Database()
+    return _db
+
+
+def run(argv=None):
+    global _db
     args = build_parser().parse_args(argv)
     try:
         if args.command == "update":
+            _db = None
             return cmd_update(args)
         if args.command == "backtest":
             return cmd_backtest(args)
@@ -598,7 +611,7 @@ def main(argv=None):
         if args.command == "web":
             from . import web
             return web.serve(args.host, args.port, args.open)
-        db = Database()
+        db = _database()
         handler = {"search": cmd_search, "fighter": cmd_fighter, "matchup": cmd_matchup,
                    "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event,
                    "upcoming": cmd_upcoming, "news": cmd_news, "footage": cmd_footage}[args.command]
@@ -607,6 +620,63 @@ def main(argv=None):
         sys.exit(str(e))
     except requests.RequestException as e:
         sys.exit(f"Network error: {e}")
+
+
+INTRO = """
+Ball Out Gamba - UFC fight data, live odds and betting analysis
+Type a command and press Enter ('help' for the full list, 'quit' to exit). For example:
+
+  update                                   download / refresh all data (first time ~10 min)
+  upcoming --news                          live odds + news for upcoming UFC cards
+  matchup "Ilia Topuria" "Islam Makhachev" --live
+  fighter "Alex Pereira"                   profile, stats, fight log
+  footage "Alex Pereira"                   links to watch their fights
+  web                                      phone app: open the address it prints on your iPhone
+"""
+
+
+def interactive():
+    """Prompt loop for when the program is started without arguments
+    (e.g. double-clicking the .exe), so the window stays open."""
+    import shlex
+    print(INTRO)
+    if not config.MODEL_PATH.exists():
+        print(f"No data yet in {config.DATA_DIR} - start with: update\n")
+    while True:
+        try:
+            line = input("ballout> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not line:
+            continue
+        if line.lower() in ("quit", "exit", "q"):
+            return
+        if line.lower() in ("help", "?"):
+            line = "--help"
+        if line.split()[0] in ("ballout", "python"):  # tolerate pasted README commands
+            line = line.split("ballout", 1)[-1].strip()
+        try:
+            run(shlex.split(line))
+        except SystemExit as e:
+            if isinstance(e.code, str):
+                print(e.code)
+        except KeyboardInterrupt:
+            print("\n(stopped)")
+        except Exception as e:  # keep the prompt alive whatever happens
+            print(f"Error: {type(e).__name__}: {e}")
+        print()
+
+
+def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):  # e.g. Windows consoles that can't show every headline character
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+    if argv is None and len(sys.argv) == 1:
+        return interactive()
+    return run(argv)
 
 
 if __name__ == "__main__":

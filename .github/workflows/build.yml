@@ -1,0 +1,69 @@
+name: Build executables
+
+# Builds a portable single-file program for Windows, macOS and Linux.
+# Every run uploads them as downloadable artifacts; pushing a tag like v1.0
+# also attaches them to a GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["main", "master", "claude/**"]
+    paths: ["ballout/**", "packaging/**", "tests/**", "requirements.txt", ".github/workflows/build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            binary: dist/ballout.exe
+            asset: ballout-windows.exe
+          - os: macos-latest
+            binary: dist/ballout
+            asset: ballout-macos
+          - os: ubuntu-latest
+            binary: dist/ballout
+            asset: ballout-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Unit tests
+        run: python -m unittest -v
+
+      - name: Build
+        run: python packaging/build.py
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          ${{ matrix.binary }} --help
+          printf 'help\nquit\n' | ${{ matrix.binary }}
+
+      - name: Rename
+        shell: bash
+        run: mv ${{ matrix.binary }} dist/${{ matrix.asset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset }}

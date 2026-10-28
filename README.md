@@ -29,6 +29,25 @@ event since 2023, one page per second. Later runs only fetch new events and take
 the latest results. (Or `pip install -e .`
 and use the `ballout` command instead of `python -m ballout`.)
 
+## Portable program (no Python needed)
+
+Ready-made single-file programs for **Windows** (`ballout-windows.exe`), **macOS**
+(`ballout-macos`, Apple Silicon) and **Linux** (`ballout-linux`) are built automatically
+by GitHub Actions. Download them from the repo's **Actions** tab (latest "Build
+executables" run → Artifacts), or from **Releases** once a version tag such as `v1.0`
+is pushed.
+
+- Put the file in any folder, even a USB stick, and run it. It keeps its data in a
+  `ballout-data` folder right next to itself.
+- Double-clicking it opens a prompt: type `update` the first time (about 10 minutes),
+  then commands like `upcoming --news` or `matchup "Ilia Topuria" "Islam Makhachev" --live`.
+  Typing `web` starts the phone app.
+- The programs aren't code-signed, so Windows SmartScreen will warn "unknown publisher"
+  (click **More info → Run anyway**). On macOS, right-click → **Open** the first time, or
+  run `xattr -d com.apple.quarantine ballout-macos`.
+- To build one yourself: `pip install pyinstaller && python packaging/build.py` (it builds
+  for the OS you run it on).
+
 ## On your iPhone
 
 ```bash

@@ -1,9 +1,18 @@
 """Paths and data source locations."""
 
 import os
+import sys
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get("BALLOUT_DATA_DIR", Path.cwd() / "data"))
+
+def _default_data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        # Packaged executable: keep data next to the program so the folder is portable.
+        return Path(sys.executable).resolve().parent / "ballout-data"
+    return Path.cwd() / "data"
+
+
+DATA_DIR = Path(os.environ.get("BALLOUT_DATA_DIR", _default_data_dir()))
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 MODEL_PATH = DATA_DIR / "model.json"
