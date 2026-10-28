@@ -20,6 +20,7 @@ from .features import FEATURES
 DIFF_COLS = [f"d_{k}" for k in FEATURES]
 MIN_TRAIN_DATE = pd.Timestamp("2001-01-01")  # unified rules / modern era
 METHOD_PRIOR = 4.0  # pseudo-wins for shrinking a fighter's method mix
+L2 = 400.0  # ridge strength on standardised features, tuned on the backtest
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +67,7 @@ def _training_rows(rows: pd.DataFrame) -> pd.DataFrame:
     return rows[rows["result_a"].isin(["W", "L"]) & (rows["date"] >= MIN_TRAIN_DATE)]
 
 
-def train_win_model(rows: pd.DataFrame, columns: list[str] = DIFF_COLS, l2: float = 5.0) -> WinModel:
+def train_win_model(rows: pd.DataFrame, columns: list[str] = DIFF_COLS, l2: float = L2) -> WinModel:
     tr = _training_rows(rows)
     X = tr[columns].to_numpy(float)
     y = (tr["result_a"] == "W").to_numpy(float)
@@ -132,17 +133,20 @@ def _row_counts(r, side: str) -> tuple[dict, dict]:
 # Persistence
 # ---------------------------------------------------------------------------
 
-def save(model: WinModel, base_rates: dict, metrics: dict | None = None) -> None:
+def save(model: WinModel, base_rates: dict, metrics: dict | None = None,
+         blend_weights: list[float] | None = None) -> None:
     config.MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"win_model": model.to_dict(), "method_base_rates": base_rates, "backtest": metrics or {}}
+    payload = {"win_model": model.to_dict(), "method_base_rates": base_rates,
+               "blend_weights": blend_weights, "backtest": metrics or {}}
     config.MODEL_PATH.write_text(json.dumps(payload, indent=2, default=float))
 
 
-def load() -> tuple[WinModel, dict, dict]:
+def load() -> tuple[WinModel, dict, dict, list[float] | None]:
     if not config.MODEL_PATH.exists():
         raise FileNotFoundError(f"{config.MODEL_PATH} missing - run `ballout update` first")
     d = json.loads(config.MODEL_PATH.read_text())
-    return WinModel.from_dict(d["win_model"]), d["method_base_rates"], d.get("backtest", {})
+    return (WinModel.from_dict(d["win_model"]), d["method_base_rates"], d.get("backtest", {}),
+            d.get("blend_weights"))
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +158,8 @@ def _log_loss(p, y):
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
 
 
-def backtest(rows: pd.DataFrame, fights: pd.DataFrame, start_year: int = 2012) -> pd.DataFrame:
+def backtest(rows: pd.DataFrame, fights: pd.DataFrame, start_year: int = 2012,
+             columns: list[str] = DIFF_COLS, l2: float = L2) -> pd.DataFrame:
     """Walk-forward: for each year, train only on fights before Jan 1 of that
     year and score that year's fights. Returns one row per year plus 'ALL'."""
     decisive = rows[rows["result_a"].isin(["W", "L"])]
@@ -167,7 +172,7 @@ def backtest(rows: pd.DataFrame, fights: pd.DataFrame, start_year: int = 2012) -
         test = decisive[decisive["date"].dt.year == year]
         if test.empty:
             continue
-        full = train_win_model(train)
+        full = train_win_model(train, columns, l2)
         elo = train_win_model(train, ["d_elo"])
         base = method_base_rates(fights[fights["date"] < cutoff])
         p = full.predict(test)

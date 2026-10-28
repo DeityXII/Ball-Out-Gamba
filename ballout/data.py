@@ -67,23 +67,34 @@ STAT_COLS = (
 # Download
 # --------------------------------------------------------------------------
 
+def _fetch(session: requests.Session, url: str) -> bytes:
+    for attempt in range(4):
+        try:
+            resp = session.get(url, timeout=120)
+            resp.raise_for_status()
+            return resp.content
+        except requests.RequestException:
+            if attempt == 3:
+                raise
+            time.sleep(2 ** (attempt + 1))
+
+
 def download(verbose: bool = True) -> None:
     config.RAW_DIR.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
     for name in config.SOURCE_FILES:
-        url = f"{config.SOURCE_BASE}/{name}"
-        for attempt in range(4):
-            try:
-                resp = session.get(url, timeout=120)
-                resp.raise_for_status()
-                break
-            except requests.RequestException:
-                if attempt == 3:
-                    raise
-                time.sleep(2 ** (attempt + 1))
-        (config.RAW_DIR / name).write_bytes(resp.content)
+        content = _fetch(session, f"{config.SOURCE_BASE}/{name}")
+        (config.RAW_DIR / name).write_bytes(content)
         if verbose:
-            print(f"  downloaded {name} ({len(resp.content) / 1e6:.1f} MB)")
+            print(f"  downloaded {name} ({len(content) / 1e6:.1f} MB)")
+    try:  # optional: everything except the market blend works without it
+        content = _fetch(session, config.ODDS_URL)
+        (config.RAW_DIR / config.ODDS_FILE).write_bytes(content)
+        if verbose:
+            print(f"  downloaded historical odds ({len(content) / 1e6:.1f} MB)")
+    except requests.RequestException as e:
+        if verbose:
+            print(f"  warning: historical odds unavailable ({e}); market blend disabled")
 
 
 # --------------------------------------------------------------------------

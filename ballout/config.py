@@ -19,3 +19,8 @@ SOURCE_FILES = [
     "ufc_fighter_details.csv",
     "ufc_fighter_tott.csv",
 ]
+
+# Historical decimal odds (late 2014 - 2023) for the market comparison and
+# the model/market blend: https://github.com/jansen88/ufc-data
+ODDS_URL = "https://raw.githubusercontent.com/jansen88/ufc-data/master/data/complete_ufc_data.csv"
+ODDS_FILE = "historical_odds.csv"

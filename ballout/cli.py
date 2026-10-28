@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import config, data, features, model, odds
+from . import config, data, features, market, model, odds
 from .analysis import Database, LookupError_
 
 pd.set_option("display.width", 200)
@@ -52,7 +52,12 @@ def cmd_update(args):
         metrics = bt[bt["year"] == "ALL"].iloc[0].to_dict()
         print(f"  walk-forward backtest 2012-present: {metrics['acc_model']:.1%} picks correct, "
               f"log loss {metrics['logloss_model']:.3f} over {metrics['fights']} fights")
-    model.save(model.train_win_model(rep.rows), model.method_base_rates(tables["fights"]), metrics)
+    hist_odds = market.build_odds(tables["fights"])
+    hist_odds.to_csv(config.PROCESSED_DIR / "odds.csv", index=False)
+    weights = market.final_blend_weights(rep.rows, hist_odds) if len(hist_odds) else None
+    if weights:
+        print(f"  model/market blend weights: model {weights[0]:.2f}, market {weights[1]:.2f}")
+    model.save(model.train_win_model(rep.rows), model.method_base_rates(tables["fights"]), metrics, weights)
     rep.rows.to_csv(config.PROCESSED_DIR / "prefight_features.csv", index=False)
     print(f"Done. Tables are in {config.PROCESSED_DIR}")
 
@@ -101,6 +106,18 @@ def cmd_fighter(args, db: Database):
         "event": log["event"],
     })
     print(show.to_string(index=False))
+
+
+def _format_priced(priced: pd.DataFrame) -> pd.DataFrame:
+    fmt = priced.copy()
+    for c in ("model %", "market %", "blend %", "edge %"):
+        if c in fmt:
+            fmt[c] = fmt[c].map(lambda x: _pct(x, 1))
+    if "kelly %" in fmt:
+        fmt["kelly %"] = fmt["kelly %"].map(lambda x: _pct(x, 2))
+    if "EV/$100" in fmt:
+        fmt["EV/$100"] = fmt["EV/$100"].map(lambda x: f"{x:+.2f}")
+    return fmt
 
 
 def _print_matchup(db: Database, pred, odds_a=None, odds_b=None, bankroll=None, kelly=0.25):
@@ -167,21 +184,19 @@ def _print_matchup(db: Database, pred, odds_a=None, odds_b=None, bankroll=None, 
     if odds_a is not None or odds_b is not None:
         priced = db.price(pred, odds_a, odds_b, bankroll, kelly, MAX_STAKE)
         _header("Betting value")
-        fmt = priced.copy()
-        for c in ("model %", "implied %", "no-vig %", "edge %"):
-            if c in fmt:
-                fmt[c] = fmt[c].map(lambda x: _pct(x, 1))
-        if "kelly %" in fmt:
-            fmt["kelly %"] = fmt["kelly %"].map(lambda x: _pct(x, 2))
-        if "EV/$100" in fmt:
-            fmt["EV/$100"] = fmt["EV/$100"].map(lambda x: f"{x:+.2f}")
-        print(fmt.to_string(index=False))
+        print(_format_priced(priced).to_string(index=False))
+        if priced.attrs["used"] == "blend":
+            print("Edges use the blend of model and market (the most accurate estimate in backtests; "
+                  "see `backtest`).")
+        else:
+            print("Give odds for both fighters to get the market-blended estimate; "
+                  "raw model edges lost money in backtests.")
         if "vig" in priced.attrs:
             print(f"Bookmaker margin (vig): {_pct(priced.attrs['vig'], 1)}.  Kelly sizing is {kelly:g}x Kelly, "
                   f"capped at {_pct(MAX_STAKE)} of bankroll.")
-        if "edge %" in priced and priced["edge %"].abs().max() > 0.10:
-            print("Caution: the model disagrees with the market by more than 10 points. Sharp lines usually "
-                  "know something the stats don't (injury, short notice, style) - dig in before betting.")
+        if "market %" in priced and abs(priced["model %"].iloc[0] - priced["market %"].iloc[0]) > 0.15:
+            print("Caution: the stats model and the market disagree by 15+ points. The market is usually "
+                  "right when that happens (injury, short notice, style) - the blend leans on it accordingly.")
 
     for n in pred.notes:
         print(f"Note: {n}")
@@ -217,7 +232,8 @@ def cmd_card(args, db: Database):
         for i, side in enumerate(priced.to_dict("records")):
             rows.append({
                 "bout": f"{pred.a.name} vs {pred.b.name}", "pick": side["fighter"],
-                "model %": side["model %"], "fair": side["fair line"],
+                "model %": side["model %"], "market %": side.get("market %", np.nan),
+                "est %": side.get("blend %", side["model %"]), "fair": side["fair line"],
                 "book": side.get("book line", ""), "edge %": side.get("edge %", np.nan),
                 "EV/$100": side.get("EV/$100", np.nan), "kelly %": side.get("kelly %", np.nan),
                 "stake": side.get("stake", np.nan),
@@ -235,9 +251,11 @@ def cmd_card(args, db: Database):
         print(f"Wrote {args.out}")
 
     _header("Card summary")
-    fav = out.loc[out.groupby("bout", sort=False)["model %"].idxmax()]
+    fav = out.loc[out.groupby("bout", sort=False)["est %"].idxmax()]
     summary = pd.DataFrame({
-        "bout": fav["bout"], "model pick": fav["pick"], "win %": fav["model %"].map(lambda x: _pct(x, 1)),
+        "bout": fav["bout"], "pick": fav["pick"], "win %": fav["est %"].map(lambda x: _pct(x, 1)),
+        "stats model %": fav["model %"].map(lambda x: _pct(x, 1)),
+        "market %": fav["market %"].map(lambda x: _pct(x, 1)),
         "fair": fav["fair"], "distance %": fav["distance %"].map(lambda x: _pct(x, 0)),
     })
     print(summary.to_string(index=False))
@@ -245,21 +263,17 @@ def cmd_card(args, db: Database):
     priced = out[out["book"] != ""]
     if len(priced):
         value = priced[priced["edge %"] >= args.min_edge].sort_values("EV/$100", ascending=False)
-        _header(f"Value bets (model edge >= {args.min_edge:.0%} over no-vig line)")
+        _header(f"Value bets (edge >= {args.min_edge:.0%} over the no-vig line)")
         if value.empty:
-            print("None - the book's prices are at or better than the model on every fight.")
+            print("None - no side beats the no-vig line by that much on this card.")
         else:
-            show = value[["bout", "pick", "book", "fair", "model %", "edge %", "EV/$100", "kelly %"]
+            show = value[["bout", "pick", "book", "fair", "est %", "edge %", "EV/$100", "kelly %"]
                          + (["stake"] if args.bankroll else [])].copy()
-            show["model %"] = show["model %"].map(lambda x: _pct(x, 1))
+            show["est %"] = show["est %"].map(lambda x: _pct(x, 1))
             show["edge %"] = show["edge %"].map(lambda x: _pct(x, 1))
             show["EV/$100"] = show["EV/$100"].map(lambda x: f"{x:+.2f}")
             show["kelly %"] = show["kelly %"].map(lambda x: _pct(x, 2))
-            show["check"] = np.where(value["edge %"] > 0.10, "big gap - verify", "")
             print(show.to_string(index=False))
-            if (value["edge %"] > 0.10).any():
-                print("'big gap' = model and market disagree by 10+ points; the market is often right "
-                      "when that happens, so look for news the stats can't see.")
     print(f"\n{DISCLAIMER}")
 
 
@@ -304,6 +318,29 @@ def cmd_backtest(args):
     print("\nEach year is predicted using a model trained only on earlier fights. Lower log loss / Brier is better; "
           "a coin flip scores 0.693 log loss.")
 
+    hist_odds = market.build_odds(tables["fights"], verbose=False)
+    if hist_odds.empty:
+        print("\n(No historical odds downloaded - run `update` for the market comparison.)")
+        return
+    wf = market.walk_forward(rep.rows, hist_odds)
+    _header(f"Against the betting market ({wf['date'].min():%Y}-{wf['date'].max():%Y}, same fights)")
+    summ = market.summary(wf)
+    summ["accuracy"] = summ["accuracy"].map(lambda x: _pct(x, 1))
+    summ["log loss"] = summ["log loss"].map(lambda x: _num(x, 4))
+    summ["brier"] = summ["brier"].map(lambda x: _num(x, 4))
+    print(summ.to_string(index=False))
+    for label, col in (("stats model alone", "p_model"), ("model + market blend", "p_blend")):
+        _header(f"Flat 1-unit bets on every edge, using the {label}")
+        roi = market.roi_table(wf, col)
+        roi["min edge"] = roi["min edge"].map(lambda x: _pct(x))
+        roi["win %"] = roi["win %"].map(lambda x: _pct(x, 1))
+        roi["underdog bets %"] = roi["underdog bets %"].map(lambda x: _pct(x))
+        roi["profit (units)"] = roi["profit (units)"].map(lambda x: f"{x:+.1f}")
+        roi["ROI"] = roi["ROI"].map(lambda x: "-" if pd.isna(x) else f"{x:+.1%}")
+        print(roi.to_string(index=False))
+    print("\nOdds in this history carry ~1% bookmaker margin (sharp/average lines); a typical sportsbook "
+          "charges 4-5%, which would cut every ROI above by roughly 2-3 points. Shop for the best line.")
+
 
 # ---------------------------------------------------------------------------
 
@@ -337,7 +374,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--date", help="event date (default today)")
     s.add_argument("--bankroll", type=float)
     s.add_argument("--kelly", type=float, default=0.25)
-    s.add_argument("--min-edge", type=float, default=0.03, help="minimum edge to list as value (default 0.03)")
+    s.add_argument("--min-edge", type=float, default=0.05,
+                   help="minimum edge to list as value (default 0.05; smaller edges ~broke even in backtests)")
     s.add_argument("--detail", action="store_true", help="also print the full breakdown for every fight")
     s.add_argument("--out", help="write all results to this CSV")
 

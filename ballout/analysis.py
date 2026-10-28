@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from . import data, features, model, odds
+from . import data, features, market, model, odds
 from .features import FighterState
 
 
@@ -42,7 +42,7 @@ class Database:
         self.fighters = self.tables["fighters"].set_index("fighter_id")
         self.replay = features.replay(self.tables)
         self.states = self.replay.states
-        self.win_model, self.base_rates, self.backtest_metrics = model.load()
+        self.win_model, self.base_rates, self.backtest_metrics, self.blend_weights = model.load()
         self._names = {}
         for fid, st in self.states.items():
             self._names.setdefault(normalize_name(st.name), []).append(fid)
@@ -153,12 +153,12 @@ class Database:
                 weight_class: str | None = None) -> Prediction:
         date = pd.Timestamp(date) if date is not None else pd.Timestamp.today().normalize()
         sa, sb = self.states[a_id], self.states[b_id]
-        fa = features.side_features(sa, self.info(a_id), date)
-        fb = features.side_features(sb, self.info(b_id), date)
+        wc = self._weight_class(weight_class) if weight_class else self._likely_weight_class(a_id, b_id)
+        fa = features.side_features(sa, self.info(a_id), date, wc)
+        fb = features.side_features(sb, self.info(b_id), date, wc)
         diffs = {f"d_{k}": v for k, v in features.diff_features(fa, fb).items()}
         p_a = float(self.win_model.predict(diffs)[0])
 
-        wc = weight_class or self._likely_weight_class(a_id, b_id)
         base = self.base_rates.get(wc, self.base_rates["_all"])
         aw = {"KO": sa.ko_wins, "SUB": sa.sub_wins, "DEC": sa.dec_wins}
         al = {"KO": sa.ko_losses, "SUB": sa.sub_losses, "DEC": sa.dec_losses}
@@ -177,6 +177,16 @@ class Database:
             if pd.isna(self.info(fid).get("dob")):
                 notes.append(f"No date of birth for {self.states[fid].name}; age edge ignored.")
         return Prediction(sa, sb, p_a, methods, diffs, date, notes)
+
+    def _weight_class(self, text: str) -> str:
+        """Case-insensitive match of a user-typed division to the canonical name."""
+        known = sorted(set(self.fights["weight_class"]), key=len, reverse=True)
+        nq = normalize_name(text)
+        women = "women" in nq
+        for wc in known:
+            if normalize_name(wc.replace("Women's ", "")) in nq and ("Women's" in wc) == women:
+                return wc
+        raise LookupError_(f"Unknown weight class '{text}'. Options: {', '.join(sorted(known))}")
 
     def _likely_weight_class(self, a_id: str, b_id: str) -> str:
         for fid in (a_id, b_id):
@@ -206,24 +216,41 @@ class Database:
 
     def price(self, pred: Prediction, odds_a, odds_b, bankroll: float | None = None,
               kelly_mult: float = 0.25, max_stake: float = 1.0) -> pd.DataFrame:
-        """Compare model probability with sportsbook prices for each side."""
-        rows = []
-        dec = {}
-        for side, raw in (("a", odds_a), ("b", odds_b)):
-            dec[side] = odds.parse_odds(raw) if raw not in (None, "") and not (isinstance(raw, float) and np.isnan(raw)) else None
-        fair = (None, None, None)
+        """Compare our probability with sportsbook prices for each side.
+
+        With both sides' odds, the estimate is the model blended with the
+        market (see market.py); edges, EV and stakes are computed from it.
+        With one side only, the raw model is used and there is no no-vig line.
+        """
+        def parse(raw):
+            if raw is None or raw == "" or (isinstance(raw, float) and np.isnan(raw)):
+                return None
+            return odds.parse_odds(raw)
+
+        dec = {"a": parse(odds_a), "b": parse(odds_b)}
+        p_model = {"a": pred.p_a, "b": 1 - pred.p_a}
+        p_est, p_mkt, vig = dict(p_model), {"a": None, "b": None}, None
+        used = "model"
         if dec["a"] and dec["b"]:
-            fair = odds.no_vig(dec["a"], dec["b"])
-        for side, st, p, fair_p in (("a", pred.a, pred.p_a, fair[0]), ("b", pred.b, 1 - pred.p_a, fair[1])):
-            d = dec[side]
-            row = {"fighter": st.name, "model %": p, "fair line": odds.prob_to_american(p)}
+            p_mkt["a"], p_mkt["b"], vig = odds.no_vig(dec["a"], dec["b"])
+            if self.blend_weights:
+                pa = float(market.blend(pred.p_a, p_mkt["a"], self.blend_weights))
+                p_est = {"a": pa, "b": 1 - pa}
+                used = "blend"
+        rows = []
+        for side, st in (("a", pred.a), ("b", pred.b)):
+            d, p = dec[side], p_est[side]
+            row = {"fighter": st.name, "model %": p_model[side]}
+            if p_mkt[side] is not None:
+                row["market %"] = p_mkt[side]
+            if used == "blend":
+                row["blend %"] = p
+            row["fair line"] = odds.prob_to_american(p)
             if d:
                 k = min(odds.kelly_fraction(p, d) * kelly_mult, max_stake)
                 row.update({
                     "book line": odds.decimal_to_american(d),
-                    "implied %": odds.implied_prob(d),
-                    "no-vig %": fair_p if fair_p is not None else np.nan,
-                    "edge %": p - (fair_p if fair_p is not None else odds.implied_prob(d)),
+                    "edge %": p - (p_mkt[side] if p_mkt[side] is not None else odds.implied_prob(d)),
                     "EV/$100": 100 * odds.expected_value(p, d),
                     "kelly %": k,
                 })
@@ -231,8 +258,9 @@ class Database:
                     row["stake"] = round(bankroll * k, 2)
             rows.append(row)
         out = pd.DataFrame(rows)
-        if fair[2] is not None:
-            out.attrs["vig"] = fair[2]
+        out.attrs["used"] = used
+        if vig is not None:
+            out.attrs["vig"] = vig
         return out
 
     # ---- lists ---------------------------------------------------------

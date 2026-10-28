@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from .data import weight_limit
+
 ELO_START = 1500.0
+RECENT_DECAY = 0.6  # per-fight weight decay for the "recent" stat versions
 
 # Pseudo-counts used to shrink small samples toward the population average.
 PRIOR_MINUTES = 15.0      # career-rate stats (per-minute / per-15)
@@ -30,8 +33,16 @@ POP = {
 }
 
 
+ELO_K = (100.0, 70.0, 50.0)  # tuned on the walk-forward backtest
+ELO_FINISH_MULT = 1.15
+
+
 def elo_k(n_fights: int) -> float:
-    return 48.0 if n_fights < 3 else 36.0 if n_fights < 8 else 28.0
+    return ELO_K[0] if n_fights < 3 else ELO_K[1] if n_fights < 8 else ELO_K[2]
+
+
+def _recent_zero() -> dict:
+    return {"sec": 0.0, "sig_l": 0.0, "sig_abs": 0.0, "td_l": 0.0, "kd_abs": 0.0, "win": 0.0, "n": 0.0}
 
 
 @dataclass
@@ -77,6 +88,10 @@ class FighterState:
     last_date: pd.Timestamp | None = None
     first_date: pd.Timestamp | None = None
     results: list = field(default_factory=list)  # 'W','L','D','NC' in order
+    opp_elo_sum: float = 0.0
+    opp_elo_n: int = 0
+    last_limit: float = float("nan")
+    recent: dict = field(default_factory=_recent_zero)  # exponentially decayed totals
 
     # ---- derived metrics ------------------------------------------------
     @property
@@ -114,6 +129,30 @@ class FighterState:
     @property
     def opp_ctrl_share(self):
         return (self.opp_ctrl_sec + POP["ctrl_share"] * PRIOR_MINUTES * 60) / (self.stat_seconds + PRIOR_MINUTES * 60)
+
+    @property
+    def kd_abs_avg(self): return self._rate(self.kd_absorbed, 15, POP["kd_avg"])
+
+    # recency-weighted versions (each older fight counts RECENT_DECAY x less)
+    def _recent_rate(self, key: str, per: float, pop: float) -> float:
+        r = self.recent
+        return (r[key] + pop / per * PRIOR_MINUTES) / (r["sec"] / 60.0 + PRIOR_MINUTES) * per
+
+    @property
+    def r_slpm(self): return self._recent_rate("sig_l", 1, POP["slpm"])
+    @property
+    def r_sapm(self): return self._recent_rate("sig_abs", 1, POP["sapm"])
+    @property
+    def r_td(self): return self._recent_rate("td_l", 15, POP["td_avg"])
+    @property
+    def r_kd_abs(self): return self._recent_rate("kd_abs", 15, POP["kd_avg"])
+    @property
+    def r_win(self): return (self.recent["win"] + 0.5) / (self.recent["n"] + 1.0)
+
+    @property
+    def sos(self) -> float:
+        """Strength of schedule: average Elo of past opponents (shrunk to 1500)."""
+        return (self.opp_elo_sum + ELO_START) / (self.opp_elo_n + 1)
 
     @property
     def decisive(self) -> int:
@@ -167,6 +206,8 @@ FEATURES = [
     "layoff", "slpm", "sapm", "sig_acc", "sig_def", "td_avg", "td_acc",
     "td_def", "sub_avg", "kd_avg", "ctrl", "ko_loss_rate", "finish_rate",
     "five_rd_exp",
+    # added in tuning (each improved walk-forward log loss)
+    "sos", "r_slpm", "r_sapm", "r_td", "r_kd_abs", "r_win", "age_sq", "kd_abs", "move",
 ]
 
 
@@ -178,11 +219,15 @@ FEATURE_LABELS = {
     "sig_def": "striking defence", "td_avg": "takedowns/15", "td_acc": "takedown accuracy",
     "td_def": "takedown defence", "sub_avg": "submission attempts", "kd_avg": "knockdowns/15",
     "ctrl": "control time", "ko_loss_rate": "times KO'd", "finish_rate": "finish rate",
-    "five_rd_exp": "5-round experience",
+    "five_rd_exp": "5-round experience", "sos": "strength of schedule",
+    "r_slpm": "recent strikes landed/min", "r_sapm": "recent strikes absorbed/min",
+    "r_td": "recent takedowns", "r_kd_abs": "recent knockdowns absorbed", "r_win": "recent results",
+    "age_sq": "age curve", "kd_abs": "knockdowns absorbed", "move": "weight-class move",
 }
 
 
-def side_features(st: FighterState, info: dict, date: pd.Timestamp) -> dict:
+def side_features(st: FighterState, info: dict, date: pd.Timestamp,
+                  weight_class: str | None = None) -> dict:
     """Pre-fight features for one fighter (absolute, not differenced)."""
     dob = info.get("dob")
     age = (date - dob).days / 365.25 if dob is not None and not pd.isna(dob) else np.nan
@@ -213,6 +258,16 @@ def side_features(st: FighterState, info: dict, date: pd.Timestamp) -> dict:
         "ko_loss_rate": st.ko_loss_rate,
         "finish_rate": st.finish_rate,
         "five_rd_exp": math.log1p(st.five_round_fights),
+        "sos": st.sos / 100.0,
+        "r_slpm": st.r_slpm,
+        "r_sapm": st.r_sapm,
+        "r_td": st.r_td,
+        "r_kd_abs": st.r_kd_abs,
+        "r_win": st.r_win,
+        "age_sq": (age - 30.0) ** 2 / 10.0 if not pd.isna(age) else np.nan,
+        "kd_abs": st.kd_abs_avg,
+        "move": ((weight_limit(weight_class) - st.last_limit) / 10.0
+                 if weight_class and not pd.isna(st.last_limit) else np.nan),
     }
 
 
@@ -248,7 +303,20 @@ def _update(st: FighterState, row, date, opp_elo_before: float, outcome: str) ->
         st.five_round_fights += 1
     if not pd.isna(row.fight_seconds):
         st.total_seconds += row.fight_seconds
+    rc = st.recent
+    for k in rc:
+        rc[k] *= RECENT_DECAY
+    rc["n"] += 1.0
+    rc["win"] += {"W": 1.0, "D": 0.5}.get(outcome, 0.0)
+    if outcome != "NC":
+        st.opp_elo_sum += opp_elo_before
+        st.opp_elo_n += 1
+    st.last_limit = weight_limit(row.weight_class)
     if row.has_stats and not pd.isna(row.fight_seconds):
+        g0 = lambda c: 0.0 if pd.isna(getattr(row, c)) else float(getattr(row, c))
+        rc["sec"] += row.fight_seconds
+        rc["sig_l"] += g0("sig_landed"); rc["sig_abs"] += g0("opp_sig_landed")
+        rc["td_l"] += g0("td_landed"); rc["kd_abs"] += g0("opp_kd")
         st.stat_seconds += row.fight_seconds
         g = lambda c: 0.0 if pd.isna(getattr(row, c)) else float(getattr(row, c))
         st.sig_landed += g("sig_landed"); st.sig_att += g("sig_att")
@@ -265,7 +333,7 @@ def _update(st: FighterState, row, date, opp_elo_before: float, outcome: str) ->
     if outcome in ("W", "L", "D"):
         score = {"W": 1.0, "L": 0.0, "D": 0.5}[outcome]
         expected = 1.0 / (1.0 + 10 ** ((opp_elo_before - st.elo) / 400.0))
-        mult = 1.15 if grp in ("KO", "SUB") and outcome != "D" else 1.0
+        mult = ELO_FINISH_MULT if grp in ("KO", "SUB") and outcome != "D" else 1.0
         st.elo += elo_k(st.fights - 1) * mult * (score - expected)
         st.peak_elo = max(st.peak_elo, st.elo)
     st.first_date = st.first_date or date
@@ -299,8 +367,8 @@ def replay(tables: dict[str, pd.DataFrame]) -> Replay:
         sa = state(f.fighter_a_id, f.fighter_a)
         sb = state(f.fighter_b_id, f.fighter_b)
         date = f.date
-        fa = side_features(sa, info.get(f.fighter_a_id, {}), date)
-        fb = side_features(sb, info.get(f.fighter_b_id, {}), date)
+        fa = side_features(sa, info.get(f.fighter_a_id, {}), date, f.weight_class)
+        fb = side_features(sb, info.get(f.fighter_b_id, {}), date, f.weight_class)
         rec = {
             "fight_id": f.fight_id, "date": date, "event": f.event,
             "fighter_a_id": f.fighter_a_id, "fighter_b_id": f.fighter_b_id,
