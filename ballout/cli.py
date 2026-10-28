@@ -140,20 +140,6 @@ def _print_headlines(name: str, headlines, limit: int = 6):
         print(f"  {when}  {h.title[:110]}{tag}  ({h.source})")
 
 
-def _live_odds_for(db: Database, a_id: str, b_id: str):
-    """Best current prices for a matchup if it's on an upcoming card, else None."""
-    for ev in bfo.upcoming(include_unscheduled=True):
-        for c in ev["consensus"].itertuples(index=False):
-            ids = (db.find_strict(c.fighter1), db.find_strict(c.fighter2))
-            if set(ids) == {a_id, b_id}:
-                straight = ids[0] == a_id
-                pa = c.dec1_best if straight else c.dec2_best
-                pb = c.dec2_best if straight else c.dec1_best
-                books = (c.book1_best, c.book2_best) if straight else (c.book2_best, c.book1_best)
-                return ev["name"], ev["date"], pa, pb, books, c.books
-    return None
-
-
 def _print_matchup(db: Database, pred, odds_a=None, odds_b=None, bankroll=None, kelly=0.25):
     a, b = pred.a, pred.b
     ia, ib = db.info(a.fighter_id), db.info(b.fighter_id)
@@ -238,7 +224,7 @@ def cmd_matchup(args, db: Database):
     pred = db.predict(a, b, args.date, args.weight_class)
     oa, ob = (args.odds or (None, None))
     if args.live and not args.odds:
-        live = _live_odds_for(db, a, b)
+        live = upcoming.live_odds_for(db, a, b)
         if live:
             ev_name, ev_date, oa, ob, books, n = live
             if not pd.isna(ev_date) and not args.date:
@@ -562,6 +548,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--min-ev", type=float, default=0.05,
                    help="minimum expected return to list as a value bet (default 0.05)")
 
+    s = sub.add_parser("web", help="phone-friendly web app (open it on your iPhone over Wi-Fi)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--host", default="0.0.0.0", help="use 127.0.0.1 to allow this computer only")
+    s.add_argument("--open", action="store_true", help="open it in this computer's browser too")
+
     s = sub.add_parser("footage", help="links to watch a fighter's fights (UFC YouTube, Fight Pass)")
     s.add_argument("name")
     s.add_argument("--vs", help="only fights against this opponent")
@@ -604,6 +595,9 @@ def main(argv=None):
             return cmd_backtest(args)
         if args.command == "news" and not args.fighter:
             return cmd_news(args)
+        if args.command == "web":
+            from . import web
+            return web.serve(args.host, args.port, args.open)
         db = Database()
         handler = {"search": cmd_search, "fighter": cmd_fighter, "matchup": cmd_matchup,
                    "card": cmd_card, "leaders": cmd_leaders, "event": cmd_event,

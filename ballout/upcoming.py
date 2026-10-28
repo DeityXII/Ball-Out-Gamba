@@ -9,6 +9,7 @@ movement since we first saw the fight, and optional news flags.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -18,6 +19,7 @@ from . import bfo, config, market, news, odds
 from .analysis import Database
 
 SNAPSHOTS = "odds_snapshots.csv"
+_snapshot_lock = threading.Lock()  # the web app can run two analyses at once
 
 
 @dataclass
@@ -31,6 +33,11 @@ class EventAnalysis:
 
 def _snapshot(events: list[dict]) -> pd.DataFrame:
     """Append current consensus lines to the snapshot log and return the log."""
+    with _snapshot_lock:
+        return _snapshot_locked(events)
+
+
+def _snapshot_locked(events: list[dict]) -> pd.DataFrame:
     path = config.DATA_DIR / SNAPSHOTS
     now = pd.Timestamp.now().floor("min")
     frames = []
@@ -147,3 +154,20 @@ def value_bets(analyses: list[EventAnalysis], min_ev: float = 0.05) -> pd.DataFr
                                   if 1 / r[f"dec{side}_median"] - 1 / r[f"dec{side}_best"] > STALE_GAP else ""),
                     })
     return pd.DataFrame(rows).sort_values("EV", ascending=False) if rows else pd.DataFrame()
+
+
+def live_odds_for(db: Database, a_id: str, b_id: str):
+    """Best current prices for a matchup if it's on an upcoming card, else None.
+
+    Returns (event name, event date, best price for a, best price for b,
+    (book for a, book for b), number of books)."""
+    for ev in bfo.upcoming(include_unscheduled=True):
+        for c in ev["consensus"].itertuples(index=False):
+            ids = (db.find_strict(c.fighter1), db.find_strict(c.fighter2))
+            if set(ids) == {a_id, b_id}:
+                straight = ids[0] == a_id
+                pa = c.dec1_best if straight else c.dec2_best
+                pb = c.dec2_best if straight else c.dec1_best
+                books = (c.book1_best, c.book2_best) if straight else (c.book2_best, c.book1_best)
+                return ev["name"], ev["date"], pa, pb, books, c.books
+    return None

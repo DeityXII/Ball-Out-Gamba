@@ -29,6 +29,25 @@ event since 2023, one page per second. Later runs only fetch new events and take
 the latest results. (Or `pip install -e .`
 and use the `ballout` command instead of `python -m ballout`.)
 
+## On your iPhone
+
+```bash
+python -m ballout web
+```
+
+This starts a small server on your computer and prints two addresses:
+
+1. On your iPhone, connected to the same Wi-Fi as the computer, open the "On your
+   iPhone" address in Safari (something like `http://192.168.1.20:8765`).
+2. Tap **Share → Add to Home Screen**. It opens full-screen like an app, with tabs for
+   upcoming cards with live odds and value bets, matchups, fighter profiles with watch
+   links, and news. Your bankroll is remembered on the phone.
+
+The computer has to stay on while you use it. To use it away from home, put both devices
+on [Tailscale](https://tailscale.com) (free) and use the computer's Tailscale address. The
+app is read-only, but anyone on your network who knows the address can open it, so use
+`--host 127.0.0.1` to keep it to the computer alone.
+
 ## Data
 
 Fight data comes from [ufcstats.com](http://ufcstats.com) (the UFC's official stats
@@ -61,6 +80,7 @@ The CSVs open directly in Excel / Google Sheets / pandas if you want to dig your
 ## Commands
 
 ```bash
+python -m ballout web                                      # phone app (see "On your iPhone")
 python -m ballout upcoming                                 # every upcoming UFC card, live odds
 python -m ballout upcoming --event "UFC 334" --news --bankroll 500
 python -m ballout news "Amanda Nunes"                      # recent headlines + red flags
